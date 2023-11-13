@@ -4,7 +4,9 @@ Utilities for interacting with the Spur API.
 
 
 import urllib.request
+import urllib.parse
 import json
+import ipaddress
 
 _V2_CONTEXT_ENDPOINT = "https://api.spur.us/v2/context/"
 
@@ -21,7 +23,18 @@ def lookup(logger, token, ip_address):
     Raises:
       ValueError: If the HTTP status code is not 200.
     """
-    url = _V2_CONTEXT_ENDPOINT + ip_address
+    # Make sure we get a valid token
+    if token is None or token == "":
+        raise ValueError("No token found")
+    
+    # Make sure its a valid ip
+    try:
+      ipaddress.ip_address(ip_address) 
+    except ValueError:
+      raise ValueError("Invalid IP address")
+    
+    url = 'https://api.spur.us/v2/context/'
+    url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}
     logger.info("Headers: %s", h)
     req = urllib.request.Request(url, headers=h)

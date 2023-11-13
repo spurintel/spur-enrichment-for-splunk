@@ -79,6 +79,8 @@ class SpurFeed(Script):
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
+            if feed_type not in ["anonymous", "anonymous-residential", "realtime"]:
+                raise ValueError(f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
 
             # Get the checkpoint directory out of the modular input's metadata
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
@@ -108,7 +110,7 @@ class SpurFeed(Script):
                 return
             
             # Process the feed
-            url = "https://feeds.spur.us/v2/" + feed_type + "/latest.json.gz"
+            url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest.json.gz"])
             h = {"TOKEN": token, "Accept": "application/json"}
             logger.info("Headers: %s", h)
             req = urllib.request.Request(url, headers=h)
