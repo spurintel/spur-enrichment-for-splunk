@@ -1,2 +1,2 @@
 compress:
-	cd .. && tar --disable-copyfile --exclude='.*' --exclude=".DS_Store" --exclude='target' --exclude='Makefile' -czvf /tmp/spur-enrichment-for-splunk.tar.gz spur-splunk && mv /tmp/spur-enrichment-for-splunk.tar.gz spur-splunk/target/
+	cd .. && tar --disable-copyfile --exclude='.*' --exclude=".DS_Store" --exclude='target' --exclude='Makefile' -czvf /tmp/spur-enrichment-for-splunk.tar.gz spur-enrichment-for-splunk && mv /tmp/spur-enrichment-for-splunk.tar.gz spur-enrichment-for-splunk/target/
