@@ -37,14 +37,16 @@ def lookup(logger, token, ip_address):
     url = 'https://api.spur.us/v2/context/'
     url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}
-    logger.info("Headers: %s", h)
     req = urllib.request.Request(url, headers=h)
     logger.info("Requesting %s", url)
     try:
         resp = urllib.request.urlopen(req)
         body = resp.read().decode("utf-8")
         parsed = json.loads(body)
-        return parsed
+
+        # get the x-balance-remaining header
+        balance_remaining = int(resp.getheader("x-balance-remaining"))
+        return parsed, balance_remaining
     except urllib.error.HTTPError as e:
         raw_error = e.read().decode("utf-8")
         err_msg = ""
@@ -56,4 +58,8 @@ def lookup(logger, token, ip_address):
           err_msg = raw_error
         msg = "Error for ip %s, HTTP Status %s: %s" % (ip_address, e.status, err_msg)
         logger.error(msg)
-        return {"spur_error": msg}
+
+        # get the x-balance-remaining header
+        balance_remaining = e.getheader("x-balance-remaining")
+
+        return {"spur_error": msg}, balance_remaining
