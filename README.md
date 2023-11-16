@@ -20,7 +20,7 @@ Get the most out of your data with the Spur Splunk App. Download today and start
 5. Complete the app setup (requires a Spur API token)
 
 ### Splunkbase installation
-1. Download the application file from splunkbase: https://splunkbase.splunk.com/app/
+1. Download the application file from splunkbase: https://splunkbase.splunk.com/app/7126
 2. From splunk click on Apps -> Manage Apps
 3. Click 'Install app from file'
 4. Upload the compressed file
