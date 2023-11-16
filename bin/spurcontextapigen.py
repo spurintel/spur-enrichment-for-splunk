@@ -30,14 +30,20 @@ class SpurContextAPIGen(GeneratingCommand):
         if len(self.ip) == 0:
             raise ValueError("No ip specified")
         logger.info("ip: %s", self.ip)
-        try:
-            ctx = lookup(logger, token, self.ip)
-        except Exception as e:
-            logger.error("Error for ip %s: %s", self.ip, e)
-            ctx = {}
-        logger.info("Context for %s: %s", self.ip, ctx)
-        record = {"_time": time.time(), 'event_no': 1, "_raw": json.dumps(ctx)}
-        record.update(ctx)
-        yield record
+        
+        # Split the ip address by a comma in case it's a list of ip addresses
+        ips = self.ip.split(",")
+        for ip in ips:
+            try:
+                ctx = lookup(logger, token, ip)
+            except Exception as e:
+                logger.error("Error for ip %s: %s", ip, e)
+                error_msg = "Error looking up ip %s: %s" % (ip, e)
+                ctx = {"spur_error": error_msg}
+
+            logger.info("Context for %s: %s", self.ip, ctx)
+            record = {"_time": time.time(), 'event_no': 1, "_raw": json.dumps(ctx)}
+            record.update(ctx)
+            yield record
 
 dispatch(SpurContextAPIGen, sys.argv, sys.stdin, sys.stdout, __name__)
