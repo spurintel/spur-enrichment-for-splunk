@@ -4,11 +4,9 @@ import urllib.request
 import json
 import logging
 import logging.handlers
-import splunk
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
-from splunklib.searchcommands import dispatch, StreamingCommand, Configuration, Option, validators
-from splunklib import client
+from splunklib.searchcommands import dispatch, StreamingCommand, Configuration, Option
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
 from spurlib.api import lookup
@@ -30,7 +28,7 @@ class SpurContextAPI(StreamingCommand):
         if token is None or token == "":
             raise ValueError("No token found")
         if len(self.ip_field) == 0:
-            raise ValueError("No fields specified")
+            raise ValueError("No ip field specified")
         ipfield = self.ip_field
         logger.info("ipfield: %s", ipfield)
         for record in records:
@@ -41,8 +39,9 @@ class SpurContextAPI(StreamingCommand):
                     try:
                         ctx = lookup(logger, token, record[ipfield])
                     except Exception as e:
-                        logger.error("Error for ip %s: %s", record[ipfield], e)
-                        ctx = {}
+                        error_msg = "Error looking up ip %s: %s" % (record[ipfield], e)
+                        logger.error(error_msg)
+                        ctx = {"spur_error": error_msg}
                 if 'ip' in ctx:
                     del ctx['ip']
                 CACHE[record[ipfield]] = ctx
