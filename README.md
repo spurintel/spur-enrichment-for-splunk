@@ -37,8 +37,14 @@ Get the most out of your data with the Spur Splunk App. Download today and start
 This command generates an event based an on input ip. It uses the Spur Context API so you must have an active Spur subscription. The command takes 1 argument 'ip' which is the ip that will be passed to the context api.
 
 ##### Examples
+Single IP:
 ```
 | spurcontextapigen ip="1.1.1.1"
+```
+
+Multiple IPs:
+```
+| spurcontextapigen ip="1.1.1.1,8.8.8.8"
 ```
 
 #### Streaming command
