@@ -1,9 +1,5 @@
 import os
 import sys
-import urllib.request
-import json
-import logging
-import logging.handlers
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 from splunklib.searchcommands import dispatch, StreamingCommand, Configuration, Option

@@ -1,11 +1,7 @@
 import os
 import time
 import sys
-import urllib.request
 import json
-import logging
-import logging.handlers
-import splunk
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 from splunklib.searchcommands import dispatch, GeneratingCommand, Configuration, Option

@@ -10,6 +10,7 @@ import ipaddress
 
 _V2_CONTEXT_ENDPOINT = "https://api.spur.us/v2/context/"
 
+
 def lookup(logger, token, ip_address):
     """
     Performs a lookup of the given IP address using the Spur Context-API.
@@ -26,25 +27,33 @@ def lookup(logger, token, ip_address):
     # Make sure we get a valid token
     if token is None or token == "":
         raise ValueError("No token found")
-    
+
     # Make sure its a valid ip
     try:
-      ipaddress.ip_address(ip_address) 
+        ipaddress.ip_address(ip_address)
     except ValueError:
-      raise ValueError("Invalid IP address")
-    
+        raise ValueError("Invalid IP address")
+
     url = 'https://api.spur.us/v2/context/'
     url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}
     logger.info("Headers: %s", h)
     req = urllib.request.Request(url, headers=h)
     logger.info("Requesting %s", url)
-    with urllib.request.urlopen(req) as response:
-        if response.status != 200:
-            msg = "Error for ip %s, %s: %s", ip_address, response.status, response.read().decode("utf-8")
-            logger.error(msg)
-            return {"spur_error": msg}
-
-        body = response.read().decode("utf-8")
+    try:
+        resp = urllib.request.urlopen(req)
+        body = resp.read().decode("utf-8")
         parsed = json.loads(body)
         return parsed
+    except urllib.error.HTTPError as e:
+        raw_error = e.read().decode("utf-8")
+        err_msg = ""
+        try:
+          parsed = json.loads(raw_error)
+          if "error" in parsed:
+            err_msg = parsed["error"]
+        except Exception:
+          err_msg = raw_error
+        msg = "Error for ip %s, HTTP Status %s: %s" % (ip_address, e.status, err_msg)
+        logger.error(msg)
+        return {"spur_error": msg}
