@@ -13,10 +13,14 @@
                             <span>Enter API Token:</span>
                             <input type='password' id='password_input'></input>
                         </div>
+                        <div class='text'>
+                            <span>Low query warning threshold (leave at 0 for no warnings):</span>
+                            <input type='number' id='threshold_input' value='0'></input>
+                        </div>
                         <!-- Complete Setup button will call the completeSetup() function
                              within javascript/setup_page.js -->
                         <button id='setup_button'>Complete Setup</button>
-                        <div class='success'>Token saved successfully, redirecting to app...</div>
+                        <div class='success'>Settings saved successfully, redirecting to app...</div>
                         <div class='error'>Issue encountered during setup, details below:</div>
                         <code id='error_details'></code>
                     </div>
