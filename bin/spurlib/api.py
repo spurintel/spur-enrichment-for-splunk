@@ -41,8 +41,9 @@ def lookup(logger, token, ip_address):
     logger.info("Requesting %s", url)
     with urllib.request.urlopen(req) as response:
         if response.status != 200:
-            logger.error("Error for ip %s: %s", ip_address, response.status)
-            return {}
+            msg = "Error for ip %s, %s: %s", ip_address, response.status, response.read().decode("utf-8")
+            logger.error(msg)
+            return {"spur_error": msg}
 
         body = response.read().decode("utf-8")
         parsed = json.loads(body)
