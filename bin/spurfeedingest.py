@@ -1,9 +1,10 @@
 import os
-import time
 import sys
 import urllib.request
 import json
 import gzip
+from datetime import datetime, timezone
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
@@ -91,7 +92,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     # If we have a checkpoint check to see if we have already processed the feed for today or we need to start from the offset in the file
     start_offset = 0
     if checkpoints_enabled:
-        today = time.strftime("%Y%m%d")
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
         if 'completed_date' in checkpoint and checkpoint['completed_date'] == today:
             # If the current date is in the file, we've already processed the feed for today
             logger.info("Already processed feed for today, doing nothing")
@@ -127,7 +128,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
             "start_time": time.time(),
             "end_time": None,
             "completed_date": None,
-            "last_touched_date": time.strftime("%Y%m%d"),
+            "last_touched_date": today,
             "feed_metadata": feed_metadata,
         }
         write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
@@ -170,7 +171,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
 
     # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
     checkpoint["end_time"] = time.time()
-    checkpoint["completed_date"] = time.strftime("%Y%m%d")
+    checkpoint["completed_date"] = datetime.now(timezone.utc).strftime("%Y%m%d")
     checkpoint_file_new_contents = json.dumps(checkpoint)
     logger.info("Wrote %s events", processed)
     logger.info("Writing checkpoint file %s", checkpoint_file_path)
