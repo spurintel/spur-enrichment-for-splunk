@@ -157,6 +157,9 @@ class SpurFeed(Script):
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
             logger.info("checkpoints_enabled: %s", checkpoints_enabled)
 
+            if feed_type == "realtime":
+                checkpoints_enabled = False
+
             # Get the feed metadata
             try:
                 feed_metadata = get_feed_metadata(logger, token, feed_type)
