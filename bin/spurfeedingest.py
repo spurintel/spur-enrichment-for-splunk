@@ -171,11 +171,11 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
 
     # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
     checkpoint["end_time"] = time.time()
-    checkpoint["completed_date"] = datetime.now(timezone.utc).strftime("%Y%m%d")
+    checkpoint["completed_date"] = today
     checkpoint_file_new_contents = json.dumps(checkpoint)
     logger.info("Wrote %s events", processed)
     logger.info("Writing checkpoint file %s", checkpoint_file_path)
-    notify_feed_success(ctx, processed)        
+    notify_feed_success(ctx, processed)
     if checkpoints_enabled:
         write_checkpoint(checkpoint_file_path,
                             checkpoint_file_new_contents)
