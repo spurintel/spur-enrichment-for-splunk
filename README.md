@@ -71,17 +71,18 @@ clientip=* | head 1000 | stats values(clientip) as "ip" | mvexpand ip | spurcont
 ```
 
 ### Modular Input (Feed integration)
-The modular input allows you to insert feed data into a splunk index. It uses the Spur Feed API so you must have an active Spur subscription. The modular input takes 1 argument 'feed_type'. The feed type is the type of feed you want to pull from the Spur API and depends on your subscription level (anonymous, anonymou-residential, realtime). During setup you can override the splunk defaults to insert into a different index. You can also utilize the interval setting to ensure the feed is ingested at your desired interval. 
+The modular input allows you to insert feed data into a splunk index. It uses the Spur Feed API so you must have an active Spur subscription. The modular input takes 2 arguments: 'Feed Type', 'Enable Checkpoint Files'. The feed type is the type of feed you want to pull from the Spur API and depends on your subscription level (anonymous, anonymou-residential, realtime). The enable checkpoint files option will ensure that the same feed file will not be processed multiple times. During setup you can override the splunk defaults to insert into a different index. You can also utilize the interval setting to ensure the feed is ingested at your desired interval. 
 
 #### Setup
 1. Setup a new data input. Settings -> Data Inputs
-3. Select "Spur Feed"
-4. Click the new button
-5. Give the input a name
-6. Input your feed type
+2. Select "Spur Feed"
+3. Click the new button
+4. Give the input a name
+5. Input your feed type
+6. Enable checkpointing if needed. This is recommended for large daily feeds with an interval defined, it will be ignored for realtime.
 7. Check 'More Settings' to configure the details of the input. This is optional but is recommended if you want to override the default index and specify an interval.
-9. Click next
-10. Depending on your interval settings data may begin ingesting right away. Depending on the feed type it can take several minutes to ingest all the data.
+8. Click next
+9. Depending on your interval settings data may begin ingesting right away. Depending on the feed type it can take several minutes to ingest all the data.
 
 
 NOTE: You can monitor the progress of the feed by looking at the logs. The logs are logged locally to /opt/splunk/var/log/splunk/spurcontextapi.log. This can be viewed directly or added to splunk as a data input.
