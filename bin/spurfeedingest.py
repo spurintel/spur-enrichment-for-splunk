@@ -49,7 +49,10 @@ def get_feed_response(logger, token, feed_type, feed_metadata):
     This returns the response object so that the caller can process the feed line by line.
     Be sure to use gzip.GzipFile to decompress the response and close the file when you're done.
     """
-    url = "/".join(["https://feeds.spur.us/v2", feed_type, feed_metadata['location']])
+    location = feed_metadata['location']
+    if "realtime" in location:
+        location   = location.replace("realtime/", "")
+    url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
     logger.info("Requesting %s", url)
     req = urllib.request.Request(url, headers={"TOKEN": token})
     return urllib.request.urlopen(req)
@@ -119,10 +122,10 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
 
     # Process the feed
     logger.info("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+    processed = 0
     try:
         response = get_feed_response(logger, token, feed_type, feed_metadata)
         logger.info("Got feed response")
-        processed = 0
         checkpoint = {
             "offset": 0,
             "start_time": time.time(),
@@ -131,7 +134,8 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
             "last_touched_date": today,
             "feed_metadata": feed_metadata,
         }
-        write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
+        if checkpoints_enabled:
+            write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
         feed_generation_date = response.getheader(
             "x-feed-generation-date")
         checkpoint["feed_generation_date"] = feed_generation_date
@@ -175,9 +179,9 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     checkpoint["completed_date"] = today
     checkpoint_file_new_contents = json.dumps(checkpoint)
     logger.info("Wrote %s events", processed)
-    logger.info("Writing checkpoint file %s", checkpoint_file_path)
     notify_feed_success(ctx, processed)
     if checkpoints_enabled:
+        logger.info("Writing checkpoint file %s", checkpoint_file_path)
         write_checkpoint(checkpoint_file_path,
                             checkpoint_file_new_contents)
 
