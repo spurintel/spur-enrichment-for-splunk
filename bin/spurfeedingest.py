@@ -74,7 +74,7 @@ def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
 
 
 def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled):
-    if feed_type == "realtime":
+    if feed_type == "anonymous-residential/realtime":
         checkpoints_enabled = False
 
     # Get the feed metadata
@@ -91,8 +91,8 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
 
     # If we have a checkpoint check to see if we have already processed the feed for today or we need to start from the offset in the file
     start_offset = 0
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
     if checkpoints_enabled:
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
         if 'completed_date' in checkpoint and checkpoint['completed_date'] == today:
             # If the current date is in the file, we've already processed the feed for today
             logger.info("Already processed feed for today, doing nothing")
@@ -160,6 +160,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
                 except Exception as e:
                     logger.error("Error processing line: %s", e)
         response.close()
+        checkpoint["offset"] = processed
     except Exception as e:
         checkpoint["offset"] = processed
         if checkpoints_enabled:
@@ -203,7 +204,7 @@ class SpurFeed(Script):
         feed_type_argument = Argument("feed_type")
         feed_type_argument.title = "Feed Type"
         feed_type_argument.data_type = Argument.data_type_string
-        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-residential, 'realtime'"
+        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'"
         feed_type_argument.required_on_create = True
         feed_type_argument.required_on_edit = True
         scheme.add_argument(feed_type_argument)
@@ -229,9 +230,9 @@ class SpurFeed(Script):
         :param validation_definition: a ValidationDefinition object
         """
         feed_type = definition.parameters["feed_type"]
-        if feed_type not in ["anonymous", "anonymous-residential", "realtime"]:
+        if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
             raise ValueError(
-                f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
+                f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
 
     def stream_events(self, inputs, ew):
         """This function handles all the action: splunk calls this modular input
@@ -258,18 +259,18 @@ class SpurFeed(Script):
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
-            if feed_type not in ["anonymous", "anonymous-residential", "realtime"]:
+            if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
                 notify_feed_failure(
-                    self, f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
+                    self, f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
                 raise ValueError(
-                    f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
+                    f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
             logger.info("feed_type: %s", feed_type)
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
             logger.info("checkpoints_enabled: %s", checkpoints_enabled)
 
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
-            checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + "_" + ".txt")
+            checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + ".txt")
             logger.info("checkpoint_file_path: %s", checkpoint_file_path)
 
             try:
