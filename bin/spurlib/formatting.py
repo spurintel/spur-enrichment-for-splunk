@@ -27,6 +27,7 @@ ENRICHMENT_FIELDS = [
     "spur_tunnels_anonymous",
     "spur_tunnels_operator",
     "spur_risks",
+    "spur_error",
 ]
 
 
@@ -35,6 +36,11 @@ def format_for_enrichment(data):
     Formats a dictionary for enrichment into an existing Splunk event.
     """
     new_dict = {}
+
+    if "spur_error" in data:
+        new_dict["spur_error"] = data["spur_error"]
+        return new_dict
+
     if "as" in data:
         if "number" in data["as"]:
             new_dict["spur_as_number"] = data["as"]["number"]

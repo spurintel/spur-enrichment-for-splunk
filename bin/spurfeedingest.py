@@ -1,16 +1,190 @@
 import os
-import time
 import sys
 import urllib.request
 import json
 import gzip
+from datetime import datetime, timezone
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
+from spurlib.secrets import get_encrypted_context_api_token
+from spurlib.logging import setup_logging
+from spurlib.notify import notify_feed_failure, notify_feed_success
 from splunklib.modularinput import *
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
-from spurlib.logging import setup_logging
-from spurlib.secrets import get_encrypted_context_api_token
+
+def write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents):
+    """
+    Writes the checkpoint file to disk.
+
+    Args:
+      checkpoint_file_path (str): The path to the checkpoint file.
+      checkpoint_file_new_contents (str): The new contents of the checkpoint file.
+    """
+    with open(checkpoint_file_path, "w") as file:
+        file.write(checkpoint_file_new_contents)
+
+
+def get_feed_metadata(logger, token, feed_type):
+    """
+    Get the latest feed metadata from the Spur API. https://feeds.spur.us/v2/{feed_type}/latest.
+    The metadata is returned in JSON format:
+    {"json": {"location": "20231117/feed.json.gz", "date": "20231117", "generated_at": "2023-11-17T04:02:12Z", "available_at": "2023-11-17T04:02:19Z"}}
+    """
+    url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest"])
+    logger.info("Requesting %s", url)
+    req = urllib.request.Request(url, headers={"TOKEN": token})
+    resp = urllib.request.urlopen(req)
+    logger.info("Got feed metadata response with http status %s", resp.status)
+    body = resp.read().decode("utf-8")
+    parsed = json.loads(body)
+    logger.info("Got feed metadata: %s", parsed)
+    return parsed['json']
+
+
+def get_feed_response(logger, token, feed_type, feed_metadata):
+    """
+    Get the latest feed from the Spur API. https://feeds.spur.us/v2/{feed_type}/{feed_metadata['location']}.
+    This returns the response object so that the caller can process the feed line by line.
+    Be sure to use gzip.GzipFile to decompress the response and close the file when you're done.
+    """
+    location = feed_metadata['location']
+    if "realtime" in location:
+        location   = location.replace("realtime/", "")
+    url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
+    logger.info("Requesting %s", url)
+    req = urllib.request.Request(url, headers={"TOKEN": token})
+    return urllib.request.urlopen(req)
+
+
+def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
+    if not checkpoints_enabled:
+        return {}
+
+    checkpoint_file_contents = ""
+    try:
+        # read sha values from file, if exist
+        with open(checkpoint_file_path, 'r') as file:
+            checkpoint_file_contents = file.read()
+    except:
+        return {}
+
+    checkpoint = json.loads(checkpoint_file_contents)
+    logger.info("checkpoint '%s' found in checkpoint file %s",
+                checkpoint_file_contents, checkpoint_file_path)
+    return checkpoint
+
+
+def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled):
+    if feed_type == "anonymous-residential/realtime":
+        checkpoints_enabled = False
+
+    # Get the feed metadata
+    try:
+        feed_metadata = get_feed_metadata(logger, token, feed_type)
+    except Exception as e:
+        notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
+        logger.error("Error getting feed metadata: %s", e)
+        raise e
+
+    # Get the latest checkpoint
+    logger.info("checkpoint_file_path: %s", checkpoint_file_path)
+    checkpoint = get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled)
+
+    # If we have a checkpoint check to see if we have already processed the feed for today or we need to start from the offset in the file
+    start_offset = 0
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    if checkpoints_enabled:
+        if 'completed_date' in checkpoint and checkpoint['completed_date'] == today:
+            # If the current date is in the file, we've already processed the feed for today
+            logger.info("Already processed feed for today, doing nothing")
+            return
+        elif 'last_touched_date' in checkpoint and checkpoint['last_touched_date'] == today:
+            # If the current date is not in the file, we need to start from the offset in the file
+            logger.info("Starting from offset %s", checkpoint['offset'])
+            start_offset = checkpoint['offset']
+        else:
+            logger.info("Checkpoint found, but not for today")
+    else:
+        logger.info("No checkpoint found, starting from offset 0")
+
+    # If the latest feed location hasn't changed yet, we don't need to process the feed
+    if 'feed_metadata'in checkpoint:
+        logger.info("Checkpoint file found, checking if feed location has changed")
+        if 'location' in checkpoint['feed_metadata']:
+            logger.info("Found previous feed location: %s", checkpoint['feed_metadata']['location'])
+            if feed_metadata['location']:
+                logger.info("Found current feed location: %s", feed_metadata['location'])
+                if checkpoint['feed_metadata']['location'] == feed_metadata['location'] and checkpoints_enabled:
+                    logger.info("Feed location hasn't changed, doing nothing")
+                    return
+
+    # Process the feed
+    logger.info("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+    processed = 0
+    try:
+        response = get_feed_response(logger, token, feed_type, feed_metadata)
+        logger.info("Got feed response")
+        checkpoint = {
+            "offset": 0,
+            "start_time": time.time(),
+            "end_time": None,
+            "completed_date": None,
+            "last_touched_date": today,
+            "feed_metadata": feed_metadata,
+        }
+        if checkpoints_enabled:
+            write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
+        feed_generation_date = response.getheader(
+            "x-feed-generation-date")
+        checkpoint["feed_generation_date"] = feed_generation_date
+        logger.info("Feed generation date: %s", feed_generation_date)
+        with gzip.GzipFile(fileobj=response) as f:
+            for line in f:
+                try:
+                    data = json.loads(line.decode("utf-8"))
+                    event = Event()
+                    event.stanza = input_name
+                    event.sourceType = "spur_feed"
+                    event.time = time.time()
+                    event.data = json.dumps(data)
+                    processed += 1
+
+                    if processed < start_offset:
+                        continue
+                    ew.write_event(event)
+                    checkpoint["offset"] = processed
+
+                    if processed % 10000 == 0:
+                        logger.info("Wrote %s events", processed)
+                        if checkpoints_enabled:
+                            write_checkpoint(
+                                checkpoint_file_path, json.dumps(checkpoint))
+                except Exception as e:
+                    logger.error("Error processing line: %s", e)
+        response.close()
+        checkpoint["offset"] = processed
+    except Exception as e:
+        checkpoint["offset"] = processed
+        if checkpoints_enabled:
+            write_checkpoint(checkpoint_file_path,
+                                json.dumps(checkpoint))
+        logger.error("Error processing feed: %s", e)
+        notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
+        raise e
+
+    # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
+    checkpoint["end_time"] = time.time()
+    checkpoint["completed_date"] = today
+    checkpoint_file_new_contents = json.dumps(checkpoint)
+    logger.info("Wrote %s events", processed)
+    if "realtime" not in feed_type:
+        notify_feed_success(ctx, processed)
+    if checkpoints_enabled:
+        logger.info("Writing checkpoint file %s", checkpoint_file_path)
+        write_checkpoint(checkpoint_file_path,
+                            checkpoint_file_new_contents)
 
 
 class SpurFeed(Script):
@@ -35,10 +209,19 @@ class SpurFeed(Script):
         feed_type_argument = Argument("feed_type")
         feed_type_argument.title = "Feed Type"
         feed_type_argument.data_type = Argument.data_type_string
-        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-residential, 'realtime'"
+        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'"
         feed_type_argument.required_on_create = True
         feed_type_argument.required_on_edit = True
         scheme.add_argument(feed_type_argument)
+
+        # Checkpoint settings
+        checkpoint_argument = Argument("enable_checkpoint")
+        checkpoint_argument.title = "Enable Checkpoint Files"
+        checkpoint_argument.data_type = Argument.data_type_boolean
+        checkpoint_argument.description = "Write out a checkpoint file to make sure the same feed isn't ingested twice."
+        checkpoint_argument.required_on_create = True
+        checkpoint_argument.required_on_edit = True
+        scheme.add_argument(checkpoint_argument)
 
         return scheme
 
@@ -52,8 +235,9 @@ class SpurFeed(Script):
         :param validation_definition: a ValidationDefinition object
         """
         feed_type = definition.parameters["feed_type"]
-        if feed_type not in ["anonymous", "anonymous-residential", "realtime"]:
-            raise ValueError(f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
+        if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
+            raise ValueError(
+                f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
 
     def stream_events(self, inputs, ew):
         """This function handles all the action: splunk calls this modular input
@@ -75,74 +259,32 @@ class SpurFeed(Script):
             logger.info("Starting spur feed ingest")
             token = get_encrypted_context_api_token(self)
             if token is None or token == "":
+                notify_feed_failure(self, "No token found")
                 raise ValueError("No token found")
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
-            if feed_type not in ["anonymous", "anonymous-residential", "realtime"]:
-                raise ValueError(f"feed_type must be one of 'anonymous, anonymous-residential, 'realtime'; found {feed_type}")
+            if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
+                notify_feed_failure(
+                    self, f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
+                raise ValueError(
+                    f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
+            logger.info("feed_type: %s", feed_type)
 
-            # Get the checkpoint directory out of the modular input's metadata
+            checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
+            logger.info("checkpoints_enabled: %s", checkpoints_enabled)
+
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
-            date = time.strftime("%Y%m%d")
-            checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + "_" + date + ".txt")
-            checkpoint_file_new_contents = ""
-
-            # Set the temporary contents of the checkpoint file to an empty string
-            checkpoint_file_contents = ""
+            checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + ".txt")
+            logger.info("checkpoint_file_path: %s", checkpoint_file_path)
 
             try:
-                # read sha values from file, if exist
-                with open(checkpoint_file_path, 'r') as file:
-                    checkpoint_file_contents = file.read()
-            except:
-                # If there's an exception, assume the file doesn't exist
-                # Create the checkpoint file with an empty string
-                with open(checkpoint_file_path, "a") as file:
-                    file.write(checkpoint_file_contents + "\n")
+                process_feed(self, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled)
+            except Exception as e:
+                logger.error("Error processing feed: %s", e)
+                notify_feed_failure(self, "Error processing spur %s feed: %s" % (feed_type, e))
+                raise e
 
-            # If the file exists, check if the current date is in the file
-            if date in checkpoint_file_contents:
-                logger.info("Date %s found in checkpoint file %s", date, checkpoint_file_path)
-                # If the date is in the file, assume we've already processed the feed for today
-                # and exit
-                logger.info("Already processed feed for today, doing nothing")
-                return
-            
-            # Process the feed
-            url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest.json.gz"])
-            h = {"TOKEN": token, "Accept": "application/json"}
-            logger.info("Headers: %s", h)
-            req = urllib.request.Request(url, headers=h)
-            logger.info("Requesting %s", url)
-            written = 0
-            with urllib.request.urlopen(req) as response:
-                if response.status != 200:
-                    logger.error("Error reading feed: %s", response.status)
-                    raise Exception("Error reading feed")
-                with gzip.GzipFile(fileobj=response) as f:
-                    for line in f:
-                        try:
-                            data = json.loads(line.decode("utf-8"))
-                            event = Event()
-                            event.stanza = input_name
-                            event.sourceType = "spur_feed"
-                            event.time = time.time()
-                            event.data = json.dumps(data)
-                            ew.write_event(event)
-                            written += 1
-
-                            if written % 1000 == 0:
-                                logger.info("Wrote %s events", written)
-                        except Exception as e:
-                            logger.error("Error processing line: %s", e)
-
-                # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
-                checkpoint_file_new_contents =  date + "\n"
-                logger.info("Wrote %s events", written)
-                logger.info("Writing checkpoint file %s", checkpoint_file_path)
-                with open(checkpoint_file_path, "w") as file:
-                    file.write(checkpoint_file_new_contents)
 
 if __name__ == "__main__":
     sys.exit(SpurFeed().run(sys.argv))

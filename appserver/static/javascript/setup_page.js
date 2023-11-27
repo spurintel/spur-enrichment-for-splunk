@@ -23,6 +23,7 @@ require([
         console.log("setup_page.js completeSetup called");
         // Value of password_input from setup_page_dashboard.xml
         const passwordToSave = $('#password_input').val();
+        const thresholdToSave = $('#threshold_input').val();
         let stage = 'Initializing the Splunk SDK for Javascript';
         try {
             // Initialize a Splunk Javascript SDK Service instance
@@ -48,6 +49,19 @@ require([
                 reloadApp(service);
                 redirectToApp();
             }
+
+            // setup the custom config with the threshold value. Config file customalerts.conf in stanza [alerts] low_query_threshold.
+            stage = 'Retrieving customalerts.conf SDK collection';
+            const alertCollection = configCollection.item('customalerts');
+            await alertCollection.fetch();
+            stage = `Retrieving customalerts.conf [alerts] stanza values for ${appName}`;
+            const alertStanza = alertCollection.item('alerts');
+            await alertStanza.fetch();
+            stage = `Setting customalerts.conf [alerts] low_query_threshold = 1000`;
+            await alertStanza.update({
+                low_query_threshold: thresholdToSave
+            });
+
             // The storage passwords key = <realm>:<name>:
             stage = 'Retrieving storagePasswords SDK collection';
             const passKey = `${pwRealm}:${pwName}:`;
@@ -83,6 +97,8 @@ require([
                         password: passwordToSave,
                     }, passwordCallback);
             }
+            
+
         } catch (e) {
             console.warn(e);
             $('.error').show();
