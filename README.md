@@ -1,4 +1,4 @@
-# Spur Splunk App
+# Spur Enrichment For Splunk
 Enhance your Splunk experience with the Spur Enrichment for Splunk App. This application integrates with Spur products, providing you with enriched data and insights right in your Splunk environment. Generate events based on IP inputs, enrich existing events with data from the Spur Context API, and insert feed data into a Splunk index with our modular input feature.
 
 The Spur Splunk App requires an active Spur subscription and specific user privileges for installation. 
