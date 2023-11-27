@@ -179,7 +179,8 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     checkpoint["completed_date"] = today
     checkpoint_file_new_contents = json.dumps(checkpoint)
     logger.info("Wrote %s events", processed)
-    notify_feed_success(ctx, processed)
+    if "realtime" not in feed_type:
+        notify_feed_success(ctx, processed)
     if checkpoints_enabled:
         logger.info("Writing checkpoint file %s", checkpoint_file_path)
         write_checkpoint(checkpoint_file_path,
