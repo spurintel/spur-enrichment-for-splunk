@@ -59,10 +59,9 @@ def format_for_enrichment(data):
         new_dict["spur_infrastructure"] = ""
     if "client" in data:
         if "behaviors" in data["client"]:
-            new_dict["spur_client_behaviors"] = "|".join(
-                data["client"]["behaviors"])
+            new_dict["spur_client_behaviors"] = data["client"]["behaviors"]
         else:
-            new_dict["spur_client_behaviors"] = ""
+            new_dict["spur_client_behaviors"] = []
         if "countries" in data["client"]:
             new_dict["spur_client_countries"] = data["client"]["countries"]
         else:
@@ -72,18 +71,17 @@ def format_for_enrichment(data):
         else:
             new_dict["spur_client_spread"] = ""
         if "proxies" in data["client"]:
-            new_dict["spur_client_proxies"] = "|".join(
-                data["client"]["proxies"])
+            new_dict["spur_client_proxies"] = data["client"]["proxies"]
         else:
-            new_dict["spur_client_proxies"] = ""
+            new_dict["spur_client_proxies"] = []
         if "count" in data["client"]:
             new_dict["spur_client_count"] = data["client"]["count"]
         else:
             new_dict["spur_client_count"] = ""
         if "types" in data["client"]:
-            new_dict["spur_client_types"] = "|".join(data["client"]["types"])
+            new_dict["spur_client_types"] = data["client"]["types"]
         else:
-            new_dict["spur_client_types"] = ""
+            new_dict["spur_client_types"] = []
         if "concentration" in data["client"]:
             if "country" in data["client"]["concentration"]:
                 new_dict["spur_client_concentration_country"] = data["client"]["concentration"]["country"]
@@ -151,8 +149,8 @@ def format_for_enrichment(data):
         new_dict["spur_tunnels_anonymous"] = ""
         new_dict["spur_tunnels_operator"] = ""
     if "risks" in data:
-        new_dict["spur_risks"] = "|".join(data["risks"])
+        new_dict["spur_risks"] = data["risks"]
     else:
-        new_dict["spur_risks"] = ""
+        new_dict["spur_risks"] = []
 
     return new_dict
