@@ -34,6 +34,8 @@ def lookup(logger, token, ip_address):
     except ValueError:
         raise ValueError("Invalid IP address")
 
+    # We need to url encode the ip address
+    ip_address = urllib.parse.quote(ip_address)
     url = 'https://api.spur.us/v2/context/'
     url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}

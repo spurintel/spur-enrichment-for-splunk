@@ -46,7 +46,7 @@ class SpurContextAPI(StreamingCommand):
                     except Exception as e:
                         error_msg = "Error looking up ip %s: %s" % (record[ipfield], e)
                         logger.error(error_msg)
-                        ctx = {"spur_error": error_msg}
+                        ctx = {"spur_error": error_msg, "ip": record[ipfield]}
                 if 'ip' in ctx:
                     del ctx['ip']
                 CACHE[record[ipfield]] = ctx
@@ -54,6 +54,16 @@ class SpurContextAPI(StreamingCommand):
                 for field in ENRICHMENT_FIELDS:
                     if field in flattened:
                         record[field] = flattened[field]
+                    else:
+                        record[field] = ""
+            else: 
+                ctx = {"spur_error": "No ip address found in record"}
+                flattened = format_for_enrichment(ctx)
+                for field in ENRICHMENT_FIELDS:
+                    if field in flattened:
+                        record[field] = flattened[field]
+                    else:
+                        record[field] = ""
             yield record
 
 

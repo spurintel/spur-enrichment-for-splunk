@@ -41,7 +41,7 @@ class SpurContextAPIGen(GeneratingCommand):
             except Exception as e:
                 logger.error("Error for ip %s: %s", ip, e)
                 error_msg = "Error looking up ip %s: %s" % (ip, e)
-                ctx = {"spur_error": error_msg}
+                ctx = {"spur_error": error_msg, "ip": ip}
 
             record = {"_time": time.time(), 'event_no': 1, "_raw": json.dumps(ctx)}
             record.update(ctx)
