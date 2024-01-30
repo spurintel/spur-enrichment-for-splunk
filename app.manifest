@@ -5,13 +5,13 @@
     "id": {
       "group": null,
       "name": "spur-enrichment-for-splunk",
-      "version": "1.0.5"
+      "version": "1.0.6"
     },
     "author": [
       {
         "name": "Spur Intelligence Corporation",
-        "email": null,
-        "company": null
+        "email": "integrations@spur.us",
+        "company": "Spur Intelligence Corporation"
       }
     ],
     "releaseDate": null,
