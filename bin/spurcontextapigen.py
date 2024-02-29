@@ -2,12 +2,14 @@ import os
 import time
 import sys
 import json
+import urllib
+import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 from splunklib.searchcommands import dispatch, GeneratingCommand, Configuration, Option
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
-from spurlib.api import lookup
+from spurlib.api import lookup, get_proxy_settings
 from spurlib.logging import setup_logging
 from spurlib.secrets import get_encrypted_context_api_token
 from spurlib.notify import notify_low_balance
@@ -22,6 +24,7 @@ class SpurContextAPIGen(GeneratingCommand):
     ip = Option(require=True)
     def generate(self):
         logger = setup_logging()
+        proxy_handler_config = get_proxy_settings(self, logger)
         token = get_encrypted_context_api_token(self)
         low_balance_threshold = get_low_query_threshold(self)
         logger.info("low_balance_threshold: %s", low_balance_threshold)
@@ -35,7 +38,7 @@ class SpurContextAPIGen(GeneratingCommand):
         ips = self.ip.split(",")
         for ip in ips:
             try:
-                ctx, balance_remaining = lookup(logger, token, ip)
+                ctx, balance_remaining = lookup(logger, proxy_handler_config, token, ip)
                 if balance_remaining is not None and balance_remaining < int(low_balance_threshold):
                     notify_low_balance(self, balance_remaining)
             except Exception as e:
