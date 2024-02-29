@@ -1,11 +1,13 @@
 import os
 import sys
+import urllib
+import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 from splunklib.searchcommands import dispatch, StreamingCommand, Configuration, Option
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
-from spurlib.api import lookup
+from spurlib.api import lookup, get_proxy_settings
 from spurlib.logging import setup_logging
 from spurlib.secrets import get_encrypted_context_api_token
 from spurlib.formatting import format_for_enrichment, ENRICHMENT_FIELDS
@@ -22,6 +24,7 @@ class SpurContextAPI(StreamingCommand):
     ip_field = Option(require=True)
     def stream(self, records):
         logger = setup_logging()
+        proxy_handler_config = get_proxy_settings(self, logger)
         token = get_encrypted_context_api_token(self)
         low_balance_threshold = get_low_query_threshold(self)
         logger.info("low_balance_threshold: %s", low_balance_threshold)
@@ -38,7 +41,7 @@ class SpurContextAPI(StreamingCommand):
                     ctx = CACHE[record[ipfield]]
                 else:
                     try:
-                        ctx, balance_remaining = lookup(logger, token, record[ipfield])
+                        ctx, balance_remaining = lookup(logger, proxy_handler_config, token, record[ipfield])
                         if balance_remaining is not None:
                             if balance_remaining is not None and balance_remaining < int(low_balance_threshold) and not notified:
                                 notify_low_balance(self, balance_remaining)

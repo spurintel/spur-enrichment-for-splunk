@@ -1,13 +1,14 @@
 import os
 import sys
-import urllib.request
 import json
 import gzip
-from datetime import datetime, timezone
+import requests
 import time
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
+from spurlib.api import get_proxy_settings
 from spurlib.secrets import get_encrypted_context_api_token
 from spurlib.logging import setup_logging
 from spurlib.notify import notify_feed_failure, notify_feed_success
@@ -26,7 +27,7 @@ def write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents):
         file.write(checkpoint_file_new_contents)
 
 
-def get_feed_metadata(logger, token, feed_type):
+def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     """
     Get the latest feed metadata from the Spur API. https://feeds.spur.us/v2/{feed_type}/latest.
     The metadata is returned in JSON format:
@@ -34,16 +35,15 @@ def get_feed_metadata(logger, token, feed_type):
     """
     url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest"])
     logger.info("Requesting %s", url)
-    req = urllib.request.Request(url, headers={"TOKEN": token})
-    resp = urllib.request.urlopen(req)
-    logger.info("Got feed metadata response with http status %s", resp.status)
-    body = resp.read().decode("utf-8")
-    parsed = json.loads(body)
+    h = {"TOKEN": token}
+    resp = requests.get(url, headers=h, proxies=proxy_handler_config)
+    logger.info("Got feed metadata response with http status %s", resp.status_code)
+    parsed = resp.json()
     logger.info("Got feed metadata: %s", parsed)
     return parsed['json']
 
 
-def get_feed_response(logger, token, feed_type, feed_metadata):
+def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata):
     """
     Get the latest feed from the Spur API. https://feeds.spur.us/v2/{feed_type}/{feed_metadata['location']}.
     This returns the response object so that the caller can process the feed line by line.
@@ -54,8 +54,8 @@ def get_feed_response(logger, token, feed_type, feed_metadata):
         location   = location.replace("realtime/", "")
     url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
     logger.info("Requesting %s", url)
-    req = urllib.request.Request(url, headers={"TOKEN": token})
-    return urllib.request.urlopen(req)
+    h = {"TOKEN": token}
+    return requests.get(url, headers=h, proxies=proxy_handler_config, stream=True)
 
 
 def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
@@ -80,9 +80,12 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     if feed_type == "anonymous-residential/realtime":
         checkpoints_enabled = False
 
+    proxy_handler_config = get_proxy_settings(ctx, logger)
+    logger.info("proxy_handler_config: %s", proxy_handler_config)
+
     # Get the feed metadata
     try:
-        feed_metadata = get_feed_metadata(logger, token, feed_type)
+        feed_metadata = get_feed_metadata(logger, proxy_handler_config, token, feed_type)
     except Exception as e:
         notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
         logger.error("Error getting feed metadata: %s", e)
@@ -124,7 +127,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     logger.info("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     processed = 0
     try:
-        response = get_feed_response(logger, token, feed_type, feed_metadata)
+        response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
         logger.info("Got feed response")
         checkpoint = {
             "offset": 0,
@@ -136,11 +139,10 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
         }
         if checkpoints_enabled:
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
-        feed_generation_date = response.getheader(
-            "x-feed-generation-date")
+        feed_generation_date = response.headers.get("x-feed-generation-date")
         checkpoint["feed_generation_date"] = feed_generation_date
         logger.info("Feed generation date: %s", feed_generation_date)
-        with gzip.GzipFile(fileobj=response) as f:
+        with gzip.GzipFile(fileobj=response.raw) as f:
             for line in f:
                 try:
                     data = json.loads(line.decode("utf-8"))
