@@ -3,7 +3,7 @@ This module contains functions for formatting data for indexing into Splunk.
 """
 
 ENRICHMENT_FIELDS = [
-    "ip",
+    "spur_ip",
     "spur_as_number",
     "spur_as_organization",
     "spur_organization",
@@ -35,7 +35,9 @@ def format_for_enrichment(data):
     """
     Formats a dictionary for enrichment into an existing Splunk event.
     """
-    new_dict = {}
+    new_dict = {
+        "spur_ip": data["ip"],
+    }
 
     if "spur_error" in data:
         new_dict["spur_error"] = data["spur_error"]
