@@ -50,8 +50,8 @@ class SpurContextAPI(StreamingCommand):
                         error_msg = "Error looking up ip %s: %s" % (record[ipfield], e)
                         logger.error(error_msg)
                         ctx = {"spur_error": error_msg, "ip": record[ipfield]}
-                if 'ip' in ctx:
-                    del ctx['ip']
+                if 'spur_ip' in ctx:
+                    del ctx['spur_ip']
                 CACHE[record[ipfield]] = ctx
                 flattened = format_for_enrichment(ctx)
                 for field in ENRICHMENT_FIELDS:
