@@ -9,7 +9,7 @@ Get the most out of your data with the Spur Splunk App. Download today and start
 
 ## Pre-requisites
 1. In order to use this application you must have an active Spur Subscription. You will need to input your token during the app setup. 
-2. App install user needs "admin_all_objects" privilege and Splunk search users need "list_storage_passwords" privilege.
+2. App install user needs "admin_all_objects" privilege and Splunk search users need "list_storage_passwords" and "list_settings" privileges.
 
 ## Installation
 ### Manual installation
