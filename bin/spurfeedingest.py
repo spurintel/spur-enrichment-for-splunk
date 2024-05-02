@@ -211,7 +211,7 @@ class SpurFeed(Script):
         feed_type_argument = Argument("feed_type")
         feed_type_argument.title = "Feed Type"
         feed_type_argument.data_type = Argument.data_type_string
-        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'"
+        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'"
         feed_type_argument.required_on_create = True
         feed_type_argument.required_on_edit = True
         scheme.add_argument(feed_type_argument)
@@ -237,9 +237,9 @@ class SpurFeed(Script):
         :param validation_definition: a ValidationDefinition object
         """
         feed_type = definition.parameters["feed_type"]
-        if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
+        if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime"]:
             raise ValueError(
-                f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
+                f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
 
     def stream_events(self, inputs, ew):
         """This function handles all the action: splunk calls this modular input
@@ -266,11 +266,11 @@ class SpurFeed(Script):
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
-            if feed_type not in ["anonymous", "anonymous-residential", "anonymous-residential/realtime"]:
+            if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime"]:
                 notify_feed_failure(
-                    self, f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
+                    self, f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
                 raise ValueError(
-                    f"feed_type must be one of 'anonymous, anonymous-residential, 'anonymous-residential/realtime'; found {feed_type}")
+                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
             logger.info("feed_type: %s", feed_type)
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
