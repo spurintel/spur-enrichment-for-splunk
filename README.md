@@ -85,7 +85,7 @@ The modular input allows you to insert feed data into a splunk index. It uses th
 9. Depending on your interval settings data may begin ingesting right away. Depending on the feed type it can take several minutes to ingest all the data.
 
 
-NOTE: You can monitor the progress of the feed by looking at the logs. The logs are logged locally to /opt/splunk/var/log/splunk/spurcontextapi.log. This can be viewed directly or added to splunk as a data input.
+NOTE: You can monitor the progress of the feed by looking at the logs. The logs are logged locally to /opt/splunk/var/log/splunk/spur.log. This can be viewed directly or added to splunk as a data input.
 
 #### Examples
 ```
