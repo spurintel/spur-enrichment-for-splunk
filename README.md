@@ -9,7 +9,7 @@ Get the most out of your data with the Spur Splunk App. Download today and start
 
 ## Pre-requisites
 1. In order to use this application you must have an active Spur Subscription. You will need to input your token during the app setup. 
-2. App install user needs "admin_all_objects" privilege and Splunk search users need "list_storage_passwords" privilege.
+2. App install user needs "admin_all_objects" privilege and Splunk search users need "list_storage_passwords" and "list_settings" privileges.
 
 ## Installation
 ### Manual installation
@@ -85,7 +85,7 @@ The modular input allows you to insert feed data into a splunk index. It uses th
 9. Depending on your interval settings data may begin ingesting right away. Depending on the feed type it can take several minutes to ingest all the data.
 
 
-NOTE: You can monitor the progress of the feed by looking at the logs. The logs are logged locally to /opt/splunk/var/log/splunk/spurcontextapi.log. This can be viewed directly or added to splunk as a data input.
+NOTE: You can monitor the progress of the feed by looking at the logs. The logs are logged locally to /opt/splunk/var/log/splunk/spur.log. This can be viewed directly or added to splunk as a data input.
 
 #### Examples
 ```
