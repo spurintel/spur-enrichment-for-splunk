@@ -67,7 +67,10 @@ class SpurContextAPI(StreamingCommand):
                         record[field] = flattened[field]
                     else:
                         record[field] = ""
-            yield record
+            try:
+                yield record
+            except StopIteration:
+                return
 
 
 dispatch(SpurContextAPI, sys.argv, sys.stdin, sys.stdout, __name__)

@@ -48,6 +48,9 @@ class SpurContextAPIGen(GeneratingCommand):
 
             record = {"_time": time.time(), 'event_no': 1, "_raw": json.dumps(ctx)}
             record.update(ctx)
-            yield record
+            try:
+                yield record
+            except StopIteration:
+                return
 
 dispatch(SpurContextAPIGen, sys.argv, sys.stdin, sys.stdout, __name__)
