@@ -22,25 +22,25 @@ def get_proxy_settings(ctx, logger):
     if server_config:
       for stanza in server_config:
         if "proxyConfig" in stanza.name:
-          logger.info("proxyConfig stanza found")
+          logger.debug("proxyConfig stanza found")
           for key in stanza.content:
             if key == "http_proxy":
-              logger.info("key: %s", key)
-              logger.info("value: %s", stanza.content[key])
+              logger.debug("key: %s", key)
+              logger.debug("value: %s", stanza.content[key])
               proxy_handler_config["http"] = stanza.content[key]
             if key == "https_proxy":
-              logger.info("key: %s", key)
-              logger.info("value: %s", stanza.content[key])
+              logger.debug("key: %s", key)
+              logger.debug("value: %s", stanza.content[key])
               proxy_handler_config["https"] = stanza.content[key]
     
     if "http" in proxy_handler_config or "https" in proxy_handler_config:
       return proxy_handler_config
        
     if "HTTP_PROXY" in os.environ:
-        logger.info("HTTP_PROXY: %s", os.environ["HTTP_PROXY"])
+        logger.debug("HTTP_PROXY: %s", os.environ["HTTP_PROXY"])
         proxy_handler_config["http"] = os.environ["HTTP_PROXY"]
     if "HTTPS_PROXY" in os.environ:
-        logger.info("HTTPS_PROXY: %s", os.environ["HTTPS_PROXY"])
+        logger.debug("HTTPS_PROXY: %s", os.environ["HTTPS_PROXY"])
         proxy_handler_config["https"] = os.environ["HTTPS_PROXY"]
     
     return proxy_handler_config
@@ -70,14 +70,14 @@ def lookup(logger, proxy_handler_config, token, ip_address):
         raise ValueError("Invalid IP address")
 
     # setup the proxy handler
-    logger.info("Using proxy handler config: %s", proxy_handler_config)
+    logger.debug("Using proxy handler config: %s", proxy_handler_config)
 
     # We need to url encode the ip address
     ip_address = urllib.parse.quote(ip_address)
     url = 'https://api.spur.us/v2/context/'
     url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}
-    logger.info("Requesting %s", url)
+    logger.debug("Requesting %s", url)
     try:
         resp = requests.get(url, headers=h, proxies=proxy_handler_config)
         parsed = resp.json()
