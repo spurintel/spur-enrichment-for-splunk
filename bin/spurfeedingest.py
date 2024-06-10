@@ -34,12 +34,12 @@ def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     {"json": {"location": "20231117/feed.json.gz", "date": "20231117", "generated_at": "2023-11-17T04:02:12Z", "available_at": "2023-11-17T04:02:19Z"}}
     """
     url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest"])
-    logger.info("Requesting %s", url)
+    logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
     resp = requests.get(url, headers=h, proxies=proxy_handler_config)
-    logger.info("Got feed metadata response with http status %s", resp.status_code)
+    logger.debug("Got feed metadata response with http status %s", resp.status_code)
     parsed = resp.json()
-    logger.info("Got feed metadata: %s", parsed)
+    logger.debug("Got feed metadata: %s", parsed)
     return parsed['json']
 
 
@@ -53,7 +53,7 @@ def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metad
     if "realtime" in location:
         location   = location.replace("realtime/", "")
     url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
-    logger.info("Requesting %s", url)
+    logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
     return requests.get(url, headers=h, proxies=proxy_handler_config, stream=True)
 
@@ -71,7 +71,7 @@ def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
         return {}
 
     checkpoint = json.loads(checkpoint_file_contents)
-    logger.info("checkpoint '%s' found in checkpoint file %s",
+    logger.debug("checkpoint '%s' found in checkpoint file %s",
                 checkpoint_file_contents, checkpoint_file_path)
     return checkpoint
 
@@ -81,7 +81,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
         checkpoints_enabled = False
 
     proxy_handler_config = get_proxy_settings(ctx, logger)
-    logger.info("proxy_handler_config: %s", proxy_handler_config)
+    logger.debug("proxy_handler_config: %s", proxy_handler_config)
 
     # Get the feed metadata
     try:
@@ -92,7 +92,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
         raise e
 
     # Get the latest checkpoint
-    logger.info("checkpoint_file_path: %s", checkpoint_file_path)
+    logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
     checkpoint = get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled)
 
     # If we have a checkpoint check to see if we have already processed the feed for today or we need to start from the offset in the file
@@ -101,34 +101,34 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     if checkpoints_enabled:
         if 'completed_date' in checkpoint and checkpoint['completed_date'] == today:
             # If the current date is in the file, we've already processed the feed for today
-            logger.info("Already processed feed for today, doing nothing")
+            logger.debug("Already processed feed for today, doing nothing")
             return
         elif 'last_touched_date' in checkpoint and checkpoint['last_touched_date'] == today:
             # If the current date is not in the file, we need to start from the offset in the file
-            logger.info("Starting from offset %s", checkpoint['offset'])
+            logger.debug("Starting from offset %s", checkpoint['offset'])
             start_offset = checkpoint['offset']
         else:
-            logger.info("Checkpoint found, but not for today")
+            logger.debug("Checkpoint found, but not for today")
     else:
-        logger.info("No checkpoint found, starting from offset 0")
+        logger.debug("No checkpoint found, starting from offset 0")
 
     # If the latest feed location hasn't changed yet, we don't need to process the feed
     if 'feed_metadata'in checkpoint:
-        logger.info("Checkpoint file found, checking if feed location has changed")
+        logger.debug("Checkpoint file found, checking if feed location has changed")
         if 'location' in checkpoint['feed_metadata']:
-            logger.info("Found previous feed location: %s", checkpoint['feed_metadata']['location'])
+            logger.debug("Found previous feed location: %s", checkpoint['feed_metadata']['location'])
             if feed_metadata['location']:
-                logger.info("Found current feed location: %s", feed_metadata['location'])
+                logger.debug("Found current feed location: %s", feed_metadata['location'])
                 if checkpoint['feed_metadata']['location'] == feed_metadata['location'] and checkpoints_enabled:
-                    logger.info("Feed location hasn't changed, doing nothing")
+                    logger.debug("Feed location hasn't changed, doing nothing")
                     return
 
     # Process the feed
-    logger.info("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+    logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     processed = 0
     try:
         response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
-        logger.info("Got feed response")
+        logger.debug("Got feed response")
         checkpoint = {
             "offset": 0,
             "start_time": time.time(),
@@ -141,7 +141,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
         feed_generation_date = response.headers.get("x-feed-generation-date")
         checkpoint["feed_generation_date"] = feed_generation_date
-        logger.info("Feed generation date: %s", feed_generation_date)
+        logger.debug("Feed generation date: %s", feed_generation_date)
         with gzip.GzipFile(fileobj=response.raw) as f:
             for line in f:
                 try:
@@ -159,7 +159,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
                     checkpoint["offset"] = processed
 
                     if processed % 10000 == 0:
-                        logger.info("Wrote %s events", processed)
+                        logger.debug("Wrote %s events", processed)
                         if checkpoints_enabled:
                             write_checkpoint(
                                 checkpoint_file_path, json.dumps(checkpoint))
@@ -184,7 +184,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     if "realtime" not in feed_type:
         notify_feed_success(ctx, processed)
     if checkpoints_enabled:
-        logger.info("Writing checkpoint file %s", checkpoint_file_path)
+        logger.debug("Writing checkpoint file %s", checkpoint_file_path)
         write_checkpoint(checkpoint_file_path,
                             checkpoint_file_new_contents)
 
@@ -271,14 +271,14 @@ class SpurFeed(Script):
                     self, f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
                 raise ValueError(
                     f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
-            logger.info("feed_type: %s", feed_type)
+            logger.debug("feed_type: %s", feed_type)
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
-            logger.info("checkpoints_enabled: %s", checkpoints_enabled)
+            logger.debug("checkpoints_enabled: %s", checkpoints_enabled)
 
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
             checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + ".txt")
-            logger.info("checkpoint_file_path: %s", checkpoint_file_path)
+            logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
 
             try:
                 process_feed(self, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled)

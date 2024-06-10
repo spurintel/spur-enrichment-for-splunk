@@ -27,12 +27,12 @@ class SpurContextAPIGen(GeneratingCommand):
         proxy_handler_config = get_proxy_settings(self, logger)
         token = get_encrypted_context_api_token(self)
         low_balance_threshold = get_low_query_threshold(self)
-        logger.info("low_balance_threshold: %s", low_balance_threshold)
+        logger.debug("low_balance_threshold: %s", low_balance_threshold)
         if token is None or token == "":
             raise ValueError("No token found")
         if len(self.ip) == 0:
             raise ValueError("No ip specified")
-        logger.info("ip: %s", self.ip)
+        logger.debug("ip: %s", self.ip)
         
         # Split the ip address by a comma in case it's a list of ip addresses
         ips = self.ip.split(",")
@@ -48,6 +48,9 @@ class SpurContextAPIGen(GeneratingCommand):
 
             record = {"_time": time.time(), 'event_no': 1, "_raw": json.dumps(ctx)}
             record.update(ctx)
-            yield record
+            try:
+                yield record
+            except StopIteration:
+                return
 
 dispatch(SpurContextAPIGen, sys.argv, sys.stdin, sys.stdout, __name__)
