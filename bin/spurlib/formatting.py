@@ -35,9 +35,9 @@ def format_for_enrichment(data):
     """
     Formats a dictionary for enrichment into an existing Splunk event.
     """
-    new_dict = {
-        "spur_ip": data["ip"],
-    }
+    new_dict = {}
+    if "ip" in data:
+        new_dict["spur_ip"] = data["ip"]
 
     if "spur_error" in data:
         new_dict["spur_error"] = data["spur_error"]

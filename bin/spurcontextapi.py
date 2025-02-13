@@ -27,13 +27,13 @@ class SpurContextAPI(StreamingCommand):
         proxy_handler_config = get_proxy_settings(self, logger)
         token = get_encrypted_context_api_token(self)
         low_balance_threshold = get_low_query_threshold(self)
-        logger.info("low_balance_threshold: %s", low_balance_threshold)
+        logger.debug("low_balance_threshold: %s", low_balance_threshold)
         if token is None or token == "":
             raise ValueError("No token found")
         if len(self.ip_field) == 0:
             raise ValueError("No ip field specified")
         ipfield = self.ip_field
-        logger.info("ipfield: %s", ipfield)
+        logger.debug("ipfield: %s", ipfield)
         notified = False
         for record in records:
             if ipfield in record and record[ipfield] != "":
@@ -67,7 +67,10 @@ class SpurContextAPI(StreamingCommand):
                         record[field] = flattened[field]
                     else:
                         record[field] = ""
-            yield record
+            try:
+                yield record
+            except StopIteration:
+                return
 
 
 dispatch(SpurContextAPI, sys.argv, sys.stdin, sys.stdout, __name__)

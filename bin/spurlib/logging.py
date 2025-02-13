@@ -17,7 +17,7 @@ def setup_logging():
     base_log_path = os.path.join('var', 'log', 'splunk')
     logging_format = "%(asctime)s %(levelname)-s\t%(module)s:%(lineno)d - %(message)s"
     splunk_log_handler = logging.handlers.RotatingFileHandler(
-        os.path.join(splunk_home, base_log_path, logging_file_name), mode='a')
+        os.path.join(splunk_home, base_log_path, logging_file_name), mode='a', maxBytes=25000000, backupCount=5, encoding=None, delay=0)
     splunk_log_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(splunk_log_handler)
     splunk.setupSplunkLogger(logger, logging_default_config_file,
