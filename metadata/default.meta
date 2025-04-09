@@ -43,7 +43,7 @@ export = system
 export = system
 
 [commands]
-export = system
+export = *
 
 [inputs]
 export = system

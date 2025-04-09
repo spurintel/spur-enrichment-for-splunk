@@ -14,6 +14,10 @@
                             <input type='password' id='password_input'></input>
                         </div>
                         <div class='text'>
+                            <span>API URL (leave blank for default, override for on-premise Context API):</span>
+                            <input type='text' id='api_url_input' placeholder='https://api.spur.us/v2/context/'></input>
+                        </div>
+                        <div class='text'>
                             <span>Low query warning threshold (leave at 0 for no warnings):</span>
                             <input type='number' id='threshold_input' value='0'></input>
                         </div>

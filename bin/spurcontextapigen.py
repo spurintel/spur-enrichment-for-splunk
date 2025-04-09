@@ -38,7 +38,7 @@ class SpurContextAPIGen(GeneratingCommand):
         ips = self.ip.split(",")
         for ip in ips:
             try:
-                ctx, balance_remaining = lookup(logger, proxy_handler_config, token, ip)
+                ctx, balance_remaining = lookup(logger, proxy_handler_config, token, ip, self)
                 if balance_remaining is not None and balance_remaining < int(low_balance_threshold):
                     notify_low_balance(self, balance_remaining)
             except Exception as e:
