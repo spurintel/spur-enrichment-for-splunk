@@ -12,7 +12,7 @@ services:
   spurredis:
     image: spurintelligence/spurredis:latest
     # If you are on using an ARM device uncomment the following line
-    platform: linux/amd64
+    # platform: linux/amd64
     depends_on:
       redis:
         condition: service_healthy
@@ -28,7 +28,8 @@ services:
       
   splunk:
     image: splunk/splunk:latest
-    platform: linux/amd64
+    # If you are on using an ARM device uncomment the following line
+    # platform: linux/amd64
     ports:
       - "8000:8000"
     environment:
