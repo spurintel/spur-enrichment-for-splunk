@@ -20,6 +20,7 @@ def setup_logging():
         os.path.join(splunk_home, base_log_path, logging_file_name), mode='a', maxBytes=25000000, backupCount=5, encoding=None, delay=0)
     splunk_log_handler.setFormatter(logging.Formatter(logging_format))
     logger.addHandler(splunk_log_handler)
+    logger.setLevel(logging.DEBUG)
     splunk.setupSplunkLogger(logger, logging_default_config_file,
                              logging_local_config_file, logging_stanza_name)
     return logger
