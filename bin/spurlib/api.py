@@ -10,7 +10,17 @@ import json
 import ipaddress
 import os
 
-_V2_CONTEXT_ENDPOINT = "https://api.spur.us/v2/context/"
+def get_context_api_url(logger, ctx):
+    """
+    Get the configured Context API URL from api.conf, or use the default if not configured.
+    """
+    try:
+        api_config = ctx.service.confs['api']
+        endpoint = api_config['api']['context_api_url']
+        logger.debug("Context API URL: %s", endpoint)
+        return api_config['api']['context_api_url']
+    except:
+        return "https://api.spur.us/v2/context/"
 
 
 def get_proxy_settings(ctx, logger):
@@ -46,15 +56,21 @@ def get_proxy_settings(ctx, logger):
     return proxy_handler_config
 
 
-def lookup(logger, proxy_handler_config, token, ip_address):
+def lookup(logger, proxy_handler_config, token, ip_address, ctx):
     """
     Performs a lookup of the given IP address using the Spur Context-API.
 
     Args:
-      ip_address (str): The IP address to lookup.
+      logger: The logger instance to use for logging
+      proxy_handler_config (dict): Proxy configuration settings
+      token (str): The API token to use for authentication
+      ip_address (str): The IP address to lookup
+      ctx: The Splunk context object containing configuration
 
     Returns:
-      dict: A dictionary containing the response body parsed as JSON.
+      tuple: A tuple containing (dict, int) where:
+        - dict: The response body parsed as JSON
+        - int: The remaining balance from x-balance-remaining header
 
     Raises:
       ValueError: If the HTTP status code is not 200.
@@ -74,7 +90,7 @@ def lookup(logger, proxy_handler_config, token, ip_address):
 
     # We need to url encode the ip address
     ip_address = urllib.parse.quote(ip_address)
-    url = 'https://api.spur.us/v2/context/'
+    url = get_context_api_url(logger, ctx)
     url = urllib.parse.urljoin(url, ip_address)
     h = {"TOKEN": token, "Accept": "application/json"}
     logger.debug("Requesting %s", url)

@@ -1,0 +1,37 @@
+services:
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  spurredis:
+    image: spurintelligence/spurredis:latest
+    # If you are on using an ARM device uncomment the following line
+    # platform: linux/amd64
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      SPUR_REDIS_API_TOKEN: ${SPUR_REDIS_API_TOKEN}
+      SPUR_REDIS_CHUNK_SIZE: 5000
+      SPUR_REDIS_ADDR: redis:6379
+      SPUR_REDIS_LOCAL_API_AUTH_TOKENS: testtoken1,testtoken2
+      # Opt in to using the IPv6 network feed beta
+      # SPUR_REDIS_IPV6_NETWORK_FEED_BETA: true
+      
+  splunk:
+    image: splunk/splunk:latest
+    # If you are on using an ARM device uncomment the following line
+    # platform: linux/amd64
+    ports:
+      - "8000:8000"
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_PASSWORD: password 

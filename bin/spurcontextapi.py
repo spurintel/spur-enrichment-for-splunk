@@ -41,7 +41,7 @@ class SpurContextAPI(StreamingCommand):
                     ctx = CACHE[record[ipfield]]
                 else:
                     try:
-                        ctx, balance_remaining = lookup(logger, proxy_handler_config, token, record[ipfield])
+                        ctx, balance_remaining = lookup(logger, proxy_handler_config, token, record[ipfield], self)
                         if balance_remaining is not None:
                             if balance_remaining is not None and balance_remaining < int(low_balance_threshold) and not notified:
                                 notify_low_balance(self, balance_remaining)

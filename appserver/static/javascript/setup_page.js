@@ -24,6 +24,7 @@ require([
         // Value of password_input from setup_page_dashboard.xml
         const passwordToSave = $('#password_input').val();
         const thresholdToSave = $('#threshold_input').val();
+        const apiUrlToSave = $('#api_url_input').val();
         let stage = 'Initializing the Splunk SDK for Javascript';
         try {
             // Initialize a Splunk Javascript SDK Service instance
@@ -60,6 +61,19 @@ require([
             stage = `Setting customalerts.conf [alerts] low_query_threshold = 1000`;
             await alertStanza.update({
                 low_query_threshold: thresholdToSave
+            });
+
+            // Save the API URL setting
+            stage = 'Retrieving api.conf SDK collection';
+            const apiCollection = configCollection.item('api');
+            await apiCollection.fetch();
+            stage = `Retrieving api.conf [api] stanza values for ${appName}`;
+            const apiStanza = apiCollection.item('api');
+            await apiStanza.fetch();
+            stage = `Setting api.conf [api] context_api_url`;
+            console.log("apiUrlToSave: ", apiUrlToSave);
+            await apiStanza.update({
+                context_api_url: apiUrlToSave || 'https://api.spur.us/v2/context/'
             });
 
             // The storage passwords key = <realm>:<name>:

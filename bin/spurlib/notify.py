@@ -23,3 +23,10 @@ def notify_feed_success(ctx, count):
     """
     message = "Spur Context-API feed success: %s records" % count
     ctx.service.messages.create(value=message, name="Spur Feed Success", severity="info")
+
+def notify_geo_feed_success(ctx):
+    """
+    Sends a notification to the user that their geo feed has succeeded.
+    """
+    message = "Spur IP Geo feed success"
+    ctx.service.messages.create(value=message, name="Spur IP Geo Feed Success", severity="info")

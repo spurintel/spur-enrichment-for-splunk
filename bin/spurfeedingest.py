@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
 from spurlib.api import get_proxy_settings
 from spurlib.secrets import get_encrypted_context_api_token
 from spurlib.logging import setup_logging
-from spurlib.notify import notify_feed_failure, notify_feed_success
+from spurlib.notify import notify_feed_failure, notify_feed_success, notify_geo_feed_success
 from splunklib.modularinput import *
 
 
@@ -41,6 +41,22 @@ def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     parsed = resp.json()
     logger.debug("Got feed metadata: %s", parsed)
     return parsed['json']
+
+
+def get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type):
+    """
+    Get the latest feed metadata from the Spur API. https://feeds.spur.us/v2/{feed_type}/latest.
+    The metadata is returned in JSON format:
+    {"json": {"location": "20231117/feed.json.gz", "date": "20231117", "generated_at": "2023-11-17T04:02:12Z", "available_at": "2023-11-17T04:02:19Z"}}
+    """
+    url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest"])
+    logger.debug("Requesting %s", url)
+    h = {"TOKEN": token}
+    resp = requests.get(url, headers=h, proxies=proxy_handler_config)
+    logger.debug("Got feed metadata response with http status %s", resp.status_code)
+    parsed = resp.json()
+    logger.debug("Got feed metadata: %s", parsed)
+    return parsed['mmdb']
 
 
 def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata):
@@ -74,6 +90,61 @@ def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
     logger.debug("checkpoint '%s' found in checkpoint file %s",
                 checkpoint_file_contents, checkpoint_file_path)
     return checkpoint
+
+def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
+    """
+    Process the geo feed.
+    """
+    logger.info("Processing geo feed")
+    logger.debug("feed_type: %s", feed_type)
+    logger.debug("input_name: %s", input_name)
+    logger.debug("ew: %s", ew)
+    proxy_handler_config = get_proxy_settings(ctx, logger)
+    logger.debug("proxy_handler_config: %s", proxy_handler_config)
+
+    # Get the feed metadata
+    try:
+        feed_metadata = get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type)
+    except Exception as e:
+        notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
+        logger.error("Error getting feed metadata: %s", e)
+        raise e
+
+    # Process the feed
+    logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+    try:
+        # Get the application path
+        splunk_home = os.environ['SPLUNK_HOME']
+        app_local_path = os.path.join(splunk_home, "etc", "apps", "spur-enrichment-for-splunk", "local", "data")
+        mmdb_file_path = os.path.join(app_local_path, "mmdb", "ipgeo.mmdb")
+
+        # create the app_local_path if it doesn't exist
+        if not os.path.exists(app_local_path):
+            os.makedirs(app_local_path)
+
+        # create the mmdb directory if it doesn't exist
+        if not os.path.exists(os.path.join(app_local_path, "mmdb")):
+            os.makedirs(os.path.join(app_local_path, "mmdb"))
+
+        response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
+        feed_generation_date = response.headers.get("x-feed-generation-date")
+        logger.debug("Feed generation date: %s", feed_generation_date)
+
+        # Write the feed to the mmdb file
+        with open(mmdb_file_path, "wb") as f:
+            f.write(response.raw.read())
+
+        # Make the MMDB file world readable
+        os.chmod(mmdb_file_path, 0o644)
+
+        response.close()
+    except Exception as e:
+        logger.error("Error processing feed: %s", e)
+        notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
+        raise e
+
+    # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
+    notify_geo_feed_success(ctx)
 
 
 def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled):
@@ -211,7 +282,7 @@ class SpurFeed(Script):
         feed_type_argument = Argument("feed_type")
         feed_type_argument.title = "Feed Type"
         feed_type_argument.data_type = Argument.data_type_string
-        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'"
+        feed_type_argument.description = "The type of feed to download. Must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'"
         feed_type_argument.required_on_create = True
         feed_type_argument.required_on_edit = True
         scheme.add_argument(feed_type_argument)
@@ -237,9 +308,9 @@ class SpurFeed(Script):
         :param validation_definition: a ValidationDefinition object
         """
         feed_type = definition.parameters["feed_type"]
-        if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime"]:
+        if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime", "ipgeo"]:
             raise ValueError(
-                f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
+                f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
 
     def stream_events(self, inputs, ew):
         """This function handles all the action: splunk calls this modular input
@@ -266,11 +337,11 @@ class SpurFeed(Script):
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
-            if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime"]:
+            if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime", "ipgeo"]:
                 notify_feed_failure(
-                    self, f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
+                    self, f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
                 raise ValueError(
-                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime'; found {feed_type}")
+                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
             logger.debug("feed_type: %s", feed_type)
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
@@ -281,7 +352,10 @@ class SpurFeed(Script):
             logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
 
             try:
-                process_feed(self, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled)
+                if feed_type == "ipgeo":
+                    process_geo_feed(self, logger, token, feed_type, input_name, ew)
+                else:
+                    process_feed(self, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled)
             except Exception as e:
                 logger.error("Error processing feed: %s", e)
                 notify_feed_failure(self, "Error processing spur %s feed: %s" % (feed_type, e))
