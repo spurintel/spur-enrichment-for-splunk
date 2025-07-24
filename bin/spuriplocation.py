@@ -248,7 +248,7 @@ def download_mmdb_if_needed(ctx, logger, mmdb_path):
         # Check if file exists and is recent (less than 24 hours old)
         if os.path.exists(mmdb_path):
             file_age = time.time() - os.path.getmtime(mmdb_path)
-            if file_age < 86400:  # 24 hours in seconds
+            if file_age < 7 * 86400:  # 7 days in seconds
                 logger.debug("MMDB file exists and is recent, using existing file")
                 return
             else:
