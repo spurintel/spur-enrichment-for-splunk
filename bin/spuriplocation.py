@@ -231,7 +231,7 @@ def ensure_selected_fields_present(record, selected_fields):
             record[field] = ""
     return record
 
-def download_mmdb_if_needed(ctx, logger, mmdb_path, force_refresh=False):
+def download_mmdb_if_needed(ctx, logger, mmdb_path):
     """
     Download MMDB file if it doesn't exist or is older than 24 hours.
     Raises ValueError with user-friendly message if download fails.
@@ -245,16 +245,14 @@ def download_mmdb_if_needed(ctx, logger, mmdb_path, force_refresh=False):
         sys.path.insert(0, os.path.dirname(__file__))
         from spurfeedingest import process_geo_feed
         
-        # Check if file exists and is recent (less than 24 hours old), unless force refresh
-        if not force_refresh and os.path.exists(mmdb_path):
+        # Check if file exists and is recent (less than 24 hours old)
+        if os.path.exists(mmdb_path):
             file_age = time.time() - os.path.getmtime(mmdb_path)
             if file_age < 86400:  # 24 hours in seconds
                 logger.debug("MMDB file exists and is recent, using existing file")
                 return
             else:
                 logger.debug("MMDB file exists but is older than 24 hours, will refresh")
-        elif force_refresh and os.path.exists(mmdb_path):
-            logger.debug("Force refresh requested, will download new MMDB file")
         
         logger.info("Downloading MMDB file from Spur API")
         
@@ -276,28 +274,41 @@ def download_mmdb_if_needed(ctx, logger, mmdb_path, force_refresh=False):
         # Re-raise ValueError with original message
         raise
     except Exception as e:
+        # Get more detailed error information
+        import traceback
+        error_details = traceback.format_exc()
         logger.error("Error downloading MMDB file: %s", e)
-        error_msg = f"Failed to download Spur MMDB file: {str(e)}. Please check your network connectivity, proxy settings, and API token."
+        logger.error("Full traceback: %s", error_details)
+        
+        # Provide specific error messages based on error type
+        if "401" in str(e) or "Unauthorized" in str(e):
+            error_msg = f"Failed to download Spur MMDB file: Invalid API token. Please check your API token configuration."
+        elif "403" in str(e) or "Forbidden" in str(e):
+            error_msg = f"Failed to download Spur MMDB file: Access denied. Please check your API token permissions."
+        elif "timeout" in str(e).lower() or "timed out" in str(e).lower():
+            error_msg = f"Failed to download Spur MMDB file: Connection timeout. Please check your network connectivity and proxy settings."
+        elif "connection" in str(e).lower():
+            error_msg = f"Failed to download Spur MMDB file: Connection error ({str(e)}). Please check your network connectivity and proxy settings."
+        else:
+            error_msg = f"Failed to download Spur MMDB file: {str(e) or type(e).__name__}. Please check your network connectivity, proxy settings, and API token."
+        
         raise ValueError(error_msg)
 
-@Configuration()
+@Configuration(distributed=False)
 class SpurIPLocation(StreamingCommand):
     """
     Enriches records with location info from the Spur IPGeo MMDB.
     """
     ip_field = Option(require=True)
     fields = Option(require=False, default="")
-    force_refresh = Option(require=False, default=False, validate=lambda x: x.lower() in ['true', 'false', '1', '0'])
 
     def stream(self, records):
         logger = setup_logging()
         ipfield = self.ip_field
         selected_fields = parse_fields_option(self.fields)
-        force_refresh = str(self.force_refresh).lower() in ['true', '1']
         
         logger.debug("ipfield: %s", ipfield)
         logger.debug("selected_fields: %s", selected_fields)
-        logger.debug("force_refresh: %s", force_refresh)
         
         # Log available fields if user specified invalid ones
         if self.fields:
@@ -309,7 +320,7 @@ class SpurIPLocation(StreamingCommand):
             
         # Try to download MMDB if it doesn't exist or is stale
         # This will raise ValueError with clear message if it fails
-        download_mmdb_if_needed(self, logger, MMDB_PATH, force_refresh)
+        download_mmdb_if_needed(self, logger, MMDB_PATH)
             
         if GEOIP_LIB == 'geoip2':
             reader = geoip2.database.Reader(MMDB_PATH)

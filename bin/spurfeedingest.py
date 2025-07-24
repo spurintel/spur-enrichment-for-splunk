@@ -106,9 +106,21 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
     try:
         feed_metadata = get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type)
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
         logger.error("Error getting feed metadata: %s", e)
-        raise e
+        logger.error("Full traceback: %s", error_details)
+        
+        # Provide more specific error message
+        if "401" in str(e) or "Unauthorized" in str(e):
+            raise Exception(f"Invalid API token when getting {feed_type} metadata. Please check your API token configuration.")
+        elif "403" in str(e) or "Forbidden" in str(e):
+            raise Exception(f"Access denied when getting {feed_type} metadata. Please check your API token permissions.")
+        elif "timeout" in str(e).lower():
+            raise Exception(f"Timeout when getting {feed_type} metadata. Please check network connectivity.")
+        else:
+            raise Exception(f"Error getting {feed_type} metadata: {str(e) or type(e).__name__}")
 
     # Process the feed
     logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
@@ -139,9 +151,23 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
 
         response.close()
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         logger.error("Error processing feed: %s", e)
-        notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
-        raise e
+        logger.error("Full traceback: %s", error_details)
+        
+        # Provide more specific error message
+        if "permission" in str(e).lower() or "access" in str(e).lower():
+            detailed_msg = f"Permission error processing {feed_type} feed. Check file permissions for MMDB directory: {str(e)}"
+        elif "disk" in str(e).lower() or "space" in str(e).lower():
+            detailed_msg = f"Disk space error processing {feed_type} feed: {str(e)}"
+        elif "network" in str(e).lower() or "connection" in str(e).lower():
+            detailed_msg = f"Network error processing {feed_type} feed: {str(e)}"
+        else:
+            detailed_msg = f"Error processing {feed_type} feed: {str(e) or type(e).__name__}"
+            
+        notify_feed_failure(ctx, detailed_msg)
+        raise Exception(detailed_msg)
 
     # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
     notify_geo_feed_success(ctx)
