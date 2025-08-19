@@ -10,6 +10,27 @@ input {
     margin-top: 15px;
 }
 
+/* Loading indicator styles */
+#loading_indicator {
+    text-align: center;
+    padding: 20px;
+}
+
+.spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #3498db;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 10px auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
 .success {
     margin-top: 15px;
     color: green;
@@ -22,7 +43,20 @@ input {
     display: none;
 }
 
+.warnings {
+    margin-top: 15px;
+    color: orange;
+    font-weight: bold;
+    display: none;
+}
+
 #error_details {
     margin-top: 15px;
+    display: none;
+}
+
+#warning_details {
+    margin-top: 5px;
+    color: orange;
     display: none;
 }

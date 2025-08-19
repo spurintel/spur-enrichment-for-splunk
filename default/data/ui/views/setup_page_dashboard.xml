@@ -9,21 +9,34 @@
                 <div id='main_container'>
                     <h3>Spur Context API Setup Page</h3>
                     <div>
-                        <div class='text'>
-                            <span>Enter API Token:</span>
-                            <input type='password' id='password_input'></input>
+                        <!-- Loading indicator shown while checking configuration availability -->
+                        <div id='loading_indicator'>
+                            <div class='spinner'></div>
+                            <span>Checking available configurations...</span>
                         </div>
-                        <div class='text'>
-                            <span>API URL (leave blank for default, override for on-premise Context API):</span>
-                            <input type='text' id='api_url_input' placeholder='https://api.spur.us/v2/context/'></input>
+                        
+                        <!-- Configuration form - hidden by default until we know what's available -->
+                        <div id='config_form' style='display: none;'>
+                            <div class='text'>
+                                <span>Enter API Token:</span>
+                                <input type='password' id='password_input'></input>
+                            </div>
+                            <div class='text api-url-config' style='display: none;'>
+                                <span>API URL (leave blank for default, override for on-premise Context API):</span>
+                                <input type='text' id='api_url_input' placeholder='https://api.spur.us/v2/context/'></input>
+                            </div>
+                            <div class='text threshold-config' style='display: none;'>
+                                <span>Low query warning threshold (leave at 0 for no warnings):</span>
+                                <input type='number' id='threshold_input' value='0'></input>
+                            </div>
+                            <!-- Complete Setup button will call the completeSetup() function
+                                 within javascript/setup_page.js -->
+                            <button id='setup_button'>Complete Setup</button>
                         </div>
-                        <div class='text'>
-                            <span>Low query warning threshold (leave at 0 for no warnings):</span>
-                            <input type='number' id='threshold_input' value='0'></input>
-                        </div>
-                        <!-- Complete Setup button will call the completeSetup() function
-                             within javascript/setup_page.js -->
-                        <button id='setup_button'>Complete Setup</button>
+                        
+                        <!-- Status messages -->
+                        <div class='warnings' id='warnings'>Configuration warnings:</div>
+                        <code id='warning_details'></code>
                         <div class='success'>Settings saved successfully, redirecting to app...</div>
                         <div class='error'>Issue encountered during setup, details below:</div>
                         <code id='error_details'></code>

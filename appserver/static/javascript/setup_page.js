@@ -15,6 +15,15 @@ require([
 ], function($, splunkjs) {
     console.log("setup_page.js require(...) called");
 
+    // Track which configurations are available
+    let configAvailability = {
+        threshold: false,
+        apiUrl: false
+    };
+
+    // Check configuration availability when page loads
+    checkConfigurationAvailability();
+
     // Register .on( "click", handler ) for "Complete Setup" button
     $("#setup_button").click(completeSetup);
 
@@ -26,6 +35,9 @@ require([
         const thresholdToSave = $('#threshold_input').val();
         const apiUrlToSave = $('#api_url_input').val();
         let stage = 'Initializing the Splunk SDK for Javascript';
+        
+        const warnings = [];
+        
         try {
             // Initialize a Splunk Javascript SDK Service instance
             const http = new splunkjs.SplunkWebHttp();
@@ -49,80 +61,185 @@ require([
                 console.warn(`App is configured already (is_configured=${isConfigured}), skipping setup page...`);
                 reloadApp(service);
                 redirectToApp();
+                return;
             }
 
-            // setup the custom config with the threshold value. Config file customalerts.conf in stanza [alerts] low_query_threshold.
-            stage = 'Retrieving customalerts.conf SDK collection';
-            const alertCollection = configCollection.item('customalerts');
-            await alertCollection.fetch();
-            stage = `Retrieving customalerts.conf [alerts] stanza values for ${appName}`;
-            const alertStanza = alertCollection.item('alerts');
-            await alertStanza.fetch();
-            stage = `Setting customalerts.conf [alerts] low_query_threshold = 1000`;
-            await alertStanza.update({
-                low_query_threshold: thresholdToSave
-            });
-
-            // Save the API URL setting
-            stage = 'Retrieving api.conf SDK collection';
-            const apiCollection = configCollection.item('api');
-            await apiCollection.fetch();
-            stage = `Retrieving api.conf [api] stanza values for ${appName}`;
-            const apiStanza = apiCollection.item('api');
-            await apiStanza.fetch();
-            stage = `Setting api.conf [api] context_api_url`;
-            console.log("apiUrlToSave: ", apiUrlToSave);
-            await apiStanza.update({
-                context_api_url: apiUrlToSave || 'https://api.spur.us/v2/context/'
-            });
-
-            // The storage passwords key = <realm>:<name>:
-            stage = 'Retrieving storagePasswords SDK collection';
-            const passKey = `${pwRealm}:${pwName}:`;
-            const passwords = service.storagePasswords(appNamespace);
-            await passwords.fetch();
-            stage = `Checking for existing password for realm and password name = ${passKey}`;
-            const existingPw = passwords.item(passKey);
-            await existingPw;
-            function passwordCallback(err, resp) {
-                if (err) throw err;
-                stage = 'Setting app.conf [install] is_configured = 1'
-                setIsConfigured(installStanza, 1);
-                stage = `Reloading app ${appName} to register is_configured = 1 change`
-                reloadApp(service);
-                $('.success').show();
-                stage = 'Redirecting to app home page'
-                redirectToApp();
+            // Setup configurations that we know are available
+            if (configAvailability.threshold) {
+                await attemptThresholdConfig(configCollection, thresholdToSave, warnings);
             }
-            if (!existingPw) {
-                // Secret doesn't exist, create new one
-                stage = `Creating a new password for realm = ${pwRealm} and password name = ${pwName}`;
-                passwords.create(
-                    {
-                        name: pwName,
-                        password: passwordToSave,
-                        realm: pwRealm,
-                    }, passwordCallback);
-            } else {
-                // Secret exists, update to new value
-                stage = `Updating existing password for realm = ${pwRealm} and password name = ${pwName}`;
-                existingPw.update(
-                    {
-                        password: passwordToSave,
-                    }, passwordCallback);
+
+            if (configAvailability.apiUrl) {
+                await attemptApiUrlConfig(configCollection, apiUrlToSave, warnings);
             }
-            
+
+            // Critical: Save the password/token
+            await savePasswordToken(service, passwordToSave, installStanza, warnings);
 
         } catch (e) {
-            console.warn(e);
+            console.error(e);
             $('.error').show();
             $('#error_details').show();
-            let errText = `Error encountered during stage: ${stage}<br>`;
+            let errText = `Critical error encountered during stage: ${stage}<br>`;
             errText += (e.toString() === '[object Object]') ? '' : e.toString();
             if (e.hasOwnProperty('status')) errText += `<br>[${e.status}] `;
             if (e.hasOwnProperty('responseText')) errText += e.responseText;
             $('#error_details').html(errText);
         }
+    }
+
+    // Configure threshold setting (we know it's available)
+    async function attemptThresholdConfig(configCollection, thresholdToSave, warnings) {
+        console.log("Setting threshold configuration...");
+        const threshold = parseInt(thresholdToSave) || 0;
+        if (threshold < 0) {
+            throw new Error('Threshold value must be non-negative');
+        }
+        
+        const alertCollection = configCollection.item('customalerts');
+        await alertCollection.fetch();
+        const alertStanza = alertCollection.item('alerts');
+        await alertStanza.fetch();
+        await alertStanza.update({
+            low_query_threshold: threshold
+        });
+        console.log(`Successfully set threshold to ${threshold}`);
+    }
+
+    // Configure API URL setting (we know it's available)
+    async function attemptApiUrlConfig(configCollection, apiUrlToSave, warnings) {
+        console.log("Setting API URL configuration...");
+        const apiCollection = configCollection.item('api');
+        await apiCollection.fetch();
+        const apiStanza = apiCollection.item('api');
+        await apiStanza.fetch();
+        await apiStanza.update({
+            context_api_url: apiUrlToSave || 'https://api.spur.us/v2/context/'
+        });
+        console.log(`Successfully set API URL to ${apiUrlToSave || 'default'}`);
+    }
+
+    // Save password/token (critical operation)
+    async function savePasswordToken(service, passwordToSave, installStanza, warnings) {
+        const passKey = `${pwRealm}:${pwName}:`;
+        const passwords = service.storagePasswords(appNamespace);
+        await passwords.fetch();
+        const existingPw = passwords.item(passKey);
+
+        function passwordCallback(err, resp) {
+            if (err) {
+                console.error("Password save failed:", err);
+                throw err;
+            }
+            
+            // Setup completed successfully
+            setIsConfigured(installStanza, 1);
+            reloadApp(service);
+            
+            // Show success message with any warnings
+            if (warnings.length > 0) {
+                showWarnings(warnings);
+            }
+            $('.success').show();
+            redirectToApp();
+        }
+
+        if (!existingPw) {
+            // Secret doesn't exist, create new one
+            console.log(`Creating new password for realm = ${pwRealm}`);
+            passwords.create({
+                name: pwName,
+                password: passwordToSave,
+                realm: pwRealm,
+            }, passwordCallback);
+        } else {
+            // Secret exists, update to new value
+            console.log(`Updating existing password for realm = ${pwRealm}`);
+            existingPw.update({
+                password: passwordToSave,
+            }, passwordCallback);
+        }
+    }
+
+    // Show warnings for non-critical configuration failures
+    function showWarnings(warnings) {
+        if (warnings.length > 0) {
+            $('#warnings').show();
+            $('#warning_details').html(warnings.map(w => `• ${w}`).join('<br>'));
+        }
+    }
+
+    // Check which configurations are available when page loads
+    async function checkConfigurationAvailability() {
+        console.log("Checking configuration availability...");
+        const warnings = [];
+        
+        try {
+            // Initialize Splunk SDK
+            const http = new splunkjs.SplunkWebHttp();
+            const service = new splunkjs.Service(http, appNamespace);
+            const configCollection = service.configurations(appNamespace);
+            await configCollection.fetch();
+
+            // Check if customalerts.conf is available
+            try {
+                const alertCollection = configCollection.item('customalerts');
+                await alertCollection.fetch();
+                const alertStanza = alertCollection.item('alerts');
+                await alertStanza.fetch();
+                configAvailability.threshold = true;
+                console.log("Threshold configuration is available");
+            } catch (e) {
+                console.warn("Threshold configuration not available:", e);
+                warnings.push("Query threshold warnings are not available in this environment");
+                configAvailability.threshold = false;
+            }
+
+            // Check if api.conf is available
+            try {
+                const apiCollection = configCollection.item('api');
+                await apiCollection.fetch();
+                const apiStanza = apiCollection.item('api');
+                await apiStanza.fetch();
+                configAvailability.apiUrl = true;
+                console.log("API URL configuration is available");
+            } catch (e) {
+                console.warn("API URL configuration not available:", e);
+                warnings.push("Custom API URL configuration is not available in this environment");
+                configAvailability.apiUrl = false;
+            }
+
+        } catch (e) {
+            console.error("Failed to check configuration availability:", e);
+            warnings.push("Unable to check configuration availability");
+        }
+
+        // Show the configuration form with only available options
+        showConfigurationForm(warnings);
+    }
+
+    // Show the configuration form with only available inputs
+    function showConfigurationForm(warnings) {
+        // Hide loading indicator
+        $('#loading_indicator').hide();
+        
+        // Show available configuration inputs
+        if (configAvailability.threshold) {
+            $('.threshold-config').show();
+        }
+        if (configAvailability.apiUrl) {
+            $('.api-url-config').show();
+        }
+        
+        // Show any warnings about unavailable configurations
+        if (warnings.length > 0) {
+            showWarnings(warnings);
+        }
+        
+        // Show the main configuration form
+        $('#config_form').show();
+        
+        console.log("Configuration form displayed with available options");
     }
 
     async function setIsConfigured(installStanza, val) {
