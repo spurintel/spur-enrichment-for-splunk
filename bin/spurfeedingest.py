@@ -4,6 +4,7 @@ import json
 import gzip
 import requests
 import time
+import tempfile
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
@@ -97,6 +98,41 @@ def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
         checkpoint_file_path,
     )
     return checkpoint
+
+
+def download_feed_to_temp(logger, proxy_handler_config, token, feed_type, feed_metadata):
+    """
+    Download the feed file to a temporary location using x-goog-generation header for naming.
+    Returns a tuple of (file_path, goog_generation).
+    """
+    logger.info("Downloading feed to temporary file")
+    response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
+    
+    # Get the x-goog-generation header for file naming
+    goog_generation = response.headers.get("x-goog-generation", "unknown")
+    logger.info("x-goog-generation: %s", goog_generation)
+    
+    # Create temp file with a name based on x-goog-generation
+    temp_dir = tempfile.gettempdir()
+    temp_filename = f"spur_feed_{feed_type.replace('/', '_')}_{goog_generation}.gz"
+    temp_file_path = os.path.join(temp_dir, temp_filename)
+    
+    logger.info("Downloading feed to temp file: %s", temp_file_path)
+    
+    try:
+        with open(temp_file_path, "wb") as temp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+        response.close()
+        logger.info("Successfully downloaded feed to temp file")
+        return temp_file_path, goog_generation
+    except Exception as e:
+        response.close()
+        # Clean up partial file if download failed
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        logger.error("Error downloading feed to temp file: %s", e)
+        raise e
 
 
 def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
@@ -208,6 +244,7 @@ def process_feed(
     ew,
     checkpoint_file_path,
     checkpoints_enabled,
+    predownload_enabled,
 ):
     if feed_type == "anonymous-residential/realtime":
         checkpoints_enabled = False
@@ -274,11 +311,10 @@ def process_feed(
     # Process the feed
     logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     processed = 0
+    temp_file_path = None
+    goog_generation = None
+    
     try:
-        response = get_feed_response(
-            logger, proxy_handler_config, token, feed_type, feed_metadata
-        )
-        logger.debug("Got feed response")
         checkpoint = {
             "offset": 0,
             "start_time": time.time(),
@@ -289,34 +325,82 @@ def process_feed(
         }
         if checkpoints_enabled:
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
-        feed_generation_date = response.headers.get("x-feed-generation-date")
-        checkpoint["feed_generation_date"] = feed_generation_date
-        logger.debug("Feed generation date: %s", feed_generation_date)
-        with gzip.GzipFile(fileobj=response.raw) as f:
-            for line in f:
-                try:
-                    data = json.loads(line.decode("utf-8"))
-                    event = Event()
-                    event.stanza = input_name
-                    event.sourceType = "spur_feed"
-                    event.time = time.time()
-                    event.data = json.dumps(data)
-                    processed += 1
 
-                    if processed < start_offset:
-                        continue
-                    ew.write_event(event)
-                    checkpoint["offset"] = processed
+        if predownload_enabled:
+            # Download feed to temporary file first
+            logger.debug("Pre-download mode enabled, downloading feed to temp file")
+            temp_file_path, goog_generation = download_feed_to_temp(
+                logger, proxy_handler_config, token, feed_type, feed_metadata
+            )
+            logger.debug("Feed downloaded to temp file: %s", temp_file_path)
+            
+            # Process the downloaded file
+            with gzip.open(temp_file_path, 'rt', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        # Add goog_generation to the data
+                        data["feed_identifier"] = goog_generation
+                        event = Event()
+                        event.stanza = input_name
+                        event.sourceType = "spur_feed"
+                        event.time = time.time()
+                        event.data = json.dumps(data)
+                        processed += 1
 
-                    if processed % 10000 == 0:
-                        logger.debug("Wrote %s events", processed)
-                        if checkpoints_enabled:
-                            write_checkpoint(
-                                checkpoint_file_path, json.dumps(checkpoint)
-                            )
-                except Exception as e:
-                    logger.error("Error processing line: %s", e)
-        response.close()
+                        if processed < start_offset:
+                            continue
+                        ew.write_event(event)
+                        checkpoint["offset"] = processed
+
+                        if processed % 10000 == 0:
+                            logger.debug("Wrote %s events", processed)
+                            if checkpoints_enabled:
+                                write_checkpoint(
+                                    checkpoint_file_path, json.dumps(checkpoint)
+                                )
+                    except Exception as e:
+                        logger.error("Error processing line: %s", e)
+        else:
+            # Stream mode (original behavior)
+            response = get_feed_response(
+                logger, proxy_handler_config, token, feed_type, feed_metadata
+            )
+            logger.info("Got feed response")
+            feed_generation_date = response.headers.get("x-feed-generation-date")
+            goog_generation = response.headers.get("x-goog-generation", "unknown")
+            checkpoint["feed_generation_date"] = feed_generation_date
+            logger.info("Feed generation date: %s", feed_generation_date)
+            logger.info("x-goog-generation: %s", goog_generation)
+            
+            with gzip.GzipFile(fileobj=response.raw) as f:
+                for line in f:
+                    try:
+                        data = json.loads(line.decode("utf-8"))
+                        # Add goog_generation to the data
+                        data["feed_identifier"] = goog_generation
+                        event = Event()
+                        event.stanza = input_name
+                        event.sourceType = "spur_feed"
+                        event.time = time.time()
+                        event.data = json.dumps(data)
+                        processed += 1
+
+                        if processed < start_offset:
+                            continue
+                        ew.write_event(event)
+                        checkpoint["offset"] = processed
+
+                        if processed % 10000 == 0:
+                            logger.debug("Wrote %s events", processed)
+                            if checkpoints_enabled:
+                                write_checkpoint(
+                                    checkpoint_file_path, json.dumps(checkpoint)
+                                )
+                    except Exception as e:
+                        logger.error("Error processing line: %s", e)
+            response.close()
+            
         checkpoint["offset"] = processed
     except Exception as e:
         checkpoint["offset"] = processed
@@ -324,6 +408,13 @@ def process_feed(
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
         logger.error("Error processing feed: %s", e)
         notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
+        # Clean up temp file if it exists
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                logger.debug("Cleaned up temp file: %s", temp_file_path)
+            except Exception as cleanup_e:
+                logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
         raise e
 
     # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
@@ -336,6 +427,14 @@ def process_feed(
     if checkpoints_enabled:
         logger.debug("Writing checkpoint file %s", checkpoint_file_path)
         write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents)
+    
+    # Clean up temp file if it exists
+    if temp_file_path and os.path.exists(temp_file_path):
+        try:
+            os.remove(temp_file_path)
+            logger.debug("Cleaned up temp file: %s", temp_file_path)
+        except Exception as cleanup_e:
+            logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
 
 
 class SpurFeed(Script):
@@ -375,6 +474,15 @@ class SpurFeed(Script):
         checkpoint_argument.required_on_create = True
         checkpoint_argument.required_on_edit = True
         scheme.add_argument(checkpoint_argument)
+
+        # Pre-download settings
+        predownload_argument = Argument("enable_predownload")
+        predownload_argument.title = "Enable Pre-download"
+        predownload_argument.data_type = Argument.data_type_boolean
+        predownload_argument.description = "Download the full feed file to a temporary location before processing instead of streaming directly."
+        predownload_argument.required_on_create = True
+        predownload_argument.required_on_edit = True
+        scheme.add_argument(predownload_argument)
 
         return scheme
 
@@ -444,6 +552,9 @@ class SpurFeed(Script):
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
             logger.debug("checkpoints_enabled: %s", checkpoints_enabled)
+            
+            predownload_enabled = bool(int(input_item["enable_predownload"]))
+            logger.debug("predownload_enabled: %s", predownload_enabled)
 
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
             checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + ".txt")
@@ -462,6 +573,7 @@ class SpurFeed(Script):
                         ew,
                         checkpoint_file_path,
                         checkpoints_enabled,
+                        predownload_enabled,
                     )
             except Exception as e:
                 logger.error("Error processing feed: %s", e)
