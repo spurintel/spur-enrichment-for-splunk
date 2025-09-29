@@ -32,6 +32,66 @@ def write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents):
         file.write(checkpoint_file_new_contents)
 
 
+def cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, current_feed_identifier):
+    """
+    Clean up old checkpoint files for the same feed type but different feed identifiers.
+    This prevents accumulation of old checkpoint files and ensures we don't use stale data.
+    
+    Args:
+        logger: Logger instance
+        checkpoint_dir: Directory containing checkpoint files
+        feed_type: Type of feed (e.g., 'anonymous', 'anonymous-residential')
+        current_feed_identifier: Current feed identifier to keep
+    """
+    if not os.path.exists(checkpoint_dir):
+        return
+        
+    try:
+        # Pattern to match old checkpoint files for this feed type
+        old_pattern = f"{feed_type}_"
+        current_checkpoint_file = f"{feed_type}_{current_feed_identifier}.txt"
+        legacy_checkpoint_file = f"{feed_type}.txt"
+        
+        files_to_remove = []
+        
+        for filename in os.listdir(checkpoint_dir):
+            if filename.startswith(old_pattern) and filename.endswith(".txt"):
+                if filename != current_checkpoint_file:
+                    files_to_remove.append(filename)
+            elif filename == legacy_checkpoint_file:
+                # Remove legacy checkpoint files that don't use feed identifier
+                files_to_remove.append(filename)
+        
+        for filename in files_to_remove:
+            try:
+                file_path = os.path.join(checkpoint_dir, filename)
+                os.remove(file_path)
+                logger.debug("Cleaned up old checkpoint file: %s", file_path)
+            except Exception as e:
+                logger.warning("Failed to remove old checkpoint file %s: %s", filename, e)
+                
+    except Exception as e:
+        logger.warning("Error during checkpoint cleanup: %s", e)
+
+
+def get_checkpoint_file_path(checkpoint_dir, feed_type, feed_identifier):
+    """
+    Generate checkpoint file path using feed type and feed identifier.
+    
+    Args:
+        checkpoint_dir: Directory for checkpoint files
+        feed_type: Type of feed
+        feed_identifier: Feed identifier (x-goog-generation)
+        
+    Returns:
+        str: Path to checkpoint file
+    """
+    # Sanitize feed_identifier to be safe for filesystem
+    safe_identifier = feed_identifier.replace("/", "_").replace("\\", "_")
+    checkpoint_filename = f"{feed_type}_{safe_identifier}.txt"
+    return os.path.join(checkpoint_dir, checkpoint_filename)
+
+
 def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     """
     Get the latest feed metadata from the Spur API. https://feeds.spur.us/v2/{feed_type}/latest.
@@ -77,6 +137,39 @@ def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metad
     logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
     return requests.get(url, headers=h, proxies=proxy_handler_config, stream=True)
+
+
+def get_feed_identifier(logger, proxy_handler_config, token, feed_type, feed_metadata):
+    """
+    Get the feed identifier (x-goog-generation) by making a HEAD request to the feed URL.
+    This allows us to get the feed identifier before downloading the full feed.
+    
+    Args:
+        logger: Logger instance
+        proxy_handler_config: Proxy configuration
+        token: API token
+        feed_type: Type of feed
+        feed_metadata: Feed metadata containing location
+        
+    Returns:
+        str: Feed identifier (x-goog-generation) or "unknown" if not available
+    """
+    location = feed_metadata["location"]
+    if "realtime" in location:
+        location = location.replace("realtime/", "")
+    url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
+    logger.debug("Getting feed identifier from %s", url)
+    h = {"TOKEN": token}
+    
+    try:
+        # Make a HEAD request to get headers without downloading the full content
+        response = requests.head(url, headers=h, proxies=proxy_handler_config)
+        feed_identifier = response.headers.get("x-goog-generation", "unknown")
+        logger.debug("Feed identifier (x-goog-generation): %s", feed_identifier)
+        return feed_identifier
+    except Exception as e:
+        logger.warning("Failed to get feed identifier, falling back to 'unknown': %s", e)
+        return "unknown"
 
 
 def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
@@ -242,7 +335,7 @@ def process_feed(
     feed_type,
     input_name,
     ew,
-    checkpoint_file_path,
+    checkpoint_dir,
     checkpoints_enabled,
     predownload_enabled,
 ):
@@ -262,66 +355,64 @@ def process_feed(
         logger.error("Error getting feed metadata: %s", e)
         raise e
 
-    # Get the latest checkpoint
+    # Get the feed identifier early to use for checkpoint naming and uniqueness
+    try:
+        feed_identifier = get_feed_identifier(
+            logger, proxy_handler_config, token, feed_type, feed_metadata
+        )
+        logger.info("Feed identifier: %s", feed_identifier)
+    except Exception as e:
+        logger.warning("Failed to get feed identifier, using 'unknown': %s", e)
+        feed_identifier = "unknown"
+
+    # Generate checkpoint file path using feed identifier
+    checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, feed_identifier)
     logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
+
+    # Clean up old checkpoint files for this feed type
+    if checkpoints_enabled:
+        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
+
+    # Get the latest checkpoint for this specific feed identifier
     checkpoint = get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled)
 
-    # If we have a checkpoint check to see if we have already processed the feed for today or we need to start from the offset in the file
+    # Check if we've already processed this specific feed identifier
     start_offset = 0
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    if checkpoints_enabled:
-        if "completed_date" in checkpoint and checkpoint["completed_date"] == today:
-            # If the current date is in the file, we've already processed the feed for today
-            logger.debug("Already processed feed for today, doing nothing")
+    if checkpoints_enabled and checkpoint:
+        # Check if this exact feed identifier was already completed
+        if (checkpoint.get("feed_identifier") == feed_identifier and 
+            checkpoint.get("completed_date") == today):
+            logger.info("Feed identifier %s already processed today, skipping", feed_identifier)
             return
-        elif (
-            "last_touched_date" in checkpoint
-            and checkpoint["last_touched_date"] == today
-        ):
-            # If the current date is not in the file, we need to start from the offset in the file
-            logger.debug("Starting from offset %s", checkpoint["offset"])
+        elif (checkpoint.get("feed_identifier") == feed_identifier and 
+              checkpoint.get("last_touched_date") == today and 
+              "offset" in checkpoint):
+            # Same feed identifier, same day, but not completed - resume from offset
+            logger.info("Resuming processing of feed identifier %s from offset %s", 
+                       feed_identifier, checkpoint["offset"])
             start_offset = checkpoint["offset"]
         else:
-            logger.debug("Checkpoint found, but not for today")
+            # Different feed identifier or different day - start fresh
+            logger.info("Starting fresh processing for feed identifier %s", feed_identifier)
+            start_offset = 0
     else:
-        logger.debug("No checkpoint found, starting from offset 0")
-
-    # If the latest feed location hasn't changed yet, we don't need to process the feed
-    if "feed_metadata" in checkpoint:
-        logger.debug("Checkpoint file found, checking if feed location has changed")
-        if "location" in checkpoint["feed_metadata"]:
-            logger.debug(
-                "Found previous feed location: %s",
-                checkpoint["feed_metadata"]["location"],
-            )
-            if feed_metadata["location"]:
-                logger.debug(
-                    "Found current feed location: %s", feed_metadata["location"]
-                )
-                if (
-                    checkpoint["feed_metadata"]["location"] == feed_metadata["location"]
-                    and checkpoints_enabled
-                    and checkpoint.get("completed_date") == today
-                ):
-                    logger.debug(
-                        "Feed location hasn't changed and already completed today, doing nothing"
-                    )
-                    return
+        logger.info("No checkpoint found or checkpoints disabled, starting from offset 0")
 
     # Process the feed
     logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     processed = 0
     temp_file_path = None
-    goog_generation = None
     
     try:
         checkpoint = {
-            "offset": 0,
+            "offset": start_offset,
             "start_time": time.time(),
             "end_time": None,
             "completed_date": None,
             "last_touched_date": today,
             "feed_metadata": feed_metadata,
+            "feed_identifier": feed_identifier,
         }
         if checkpoints_enabled:
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
@@ -329,18 +420,23 @@ def process_feed(
         if predownload_enabled:
             # Download feed to temporary file first
             logger.debug("Pre-download mode enabled, downloading feed to temp file")
-            temp_file_path, goog_generation = download_feed_to_temp(
+            temp_file_path, download_feed_identifier = download_feed_to_temp(
                 logger, proxy_handler_config, token, feed_type, feed_metadata
             )
-            logger.debug("Feed downloaded to temp file: %s", temp_file_path)
+            logger.info("Feed downloaded to temp file: %s", temp_file_path)
+            
+            # Verify that the downloaded feed identifier matches what we expected
+            if download_feed_identifier != feed_identifier:
+                logger.warning("Downloaded feed identifier (%s) differs from expected (%s)", 
+                             download_feed_identifier, feed_identifier)
             
             # Process the downloaded file
             with gzip.open(temp_file_path, 'rt', encoding='utf-8') as f:
                 for line in f:
                     try:
                         data = json.loads(line)
-                        # Add goog_generation to the data
-                        data["feed_identifier"] = goog_generation
+                        # Add feed_identifier to the data
+                        data["feed_identifier"] = feed_identifier
                         event = Event()
                         event.stanza = input_name
                         event.sourceType = "spur_feed"
@@ -368,17 +464,22 @@ def process_feed(
             )
             logger.info("Got feed response")
             feed_generation_date = response.headers.get("x-feed-generation-date")
-            goog_generation = response.headers.get("x-goog-generation", "unknown")
+            stream_feed_identifier = response.headers.get("x-goog-generation", "unknown")
             checkpoint["feed_generation_date"] = feed_generation_date
             logger.info("Feed generation date: %s", feed_generation_date)
-            logger.info("x-goog-generation: %s", goog_generation)
+            logger.info("x-goog-generation: %s", stream_feed_identifier)
+            
+            # Verify that the stream feed identifier matches what we expected
+            if stream_feed_identifier != feed_identifier:
+                logger.warning("Stream feed identifier (%s) differs from expected (%s)", 
+                             stream_feed_identifier, feed_identifier)
             
             with gzip.GzipFile(fileobj=response.raw) as f:
                 for line in f:
                     try:
                         data = json.loads(line.decode("utf-8"))
-                        # Add goog_generation to the data
-                        data["feed_identifier"] = goog_generation
+                        # Add feed_identifier to the data
+                        data["feed_identifier"] = feed_identifier
                         event = Event()
                         event.stanza = input_name
                         event.sourceType = "spur_feed"
@@ -557,8 +658,7 @@ class SpurFeed(Script):
             logger.debug("predownload_enabled: %s", predownload_enabled)
 
             checkpoint_dir = inputs.metadata["checkpoint_dir"]
-            checkpoint_file_path = os.path.join(checkpoint_dir, feed_type + ".txt")
-            logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
+            logger.debug("checkpoint_dir: %s", checkpoint_dir)
 
             try:
                 if feed_type == "ipgeo":
@@ -571,7 +671,7 @@ class SpurFeed(Script):
                         feed_type,
                         input_name,
                         ew,
-                        checkpoint_file_path,
+                        checkpoint_dir,
                         checkpoints_enabled,
                         predownload_enabled,
                     )
