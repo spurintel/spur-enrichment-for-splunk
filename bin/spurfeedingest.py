@@ -11,7 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "spurlib"))
 from spurlib.api import get_proxy_settings
 from spurlib.secrets import get_encrypted_context_api_token
 from spurlib.logging import setup_logging
-from spurlib.notify import notify_feed_failure, notify_feed_success, notify_geo_feed_success
+from spurlib.notify import (
+    notify_feed_failure,
+    notify_feed_success,
+    notify_geo_feed_success,
+)
 from splunklib.modularinput import *
 
 
@@ -40,7 +44,7 @@ def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     logger.debug("Got feed metadata response with http status %s", resp.status_code)
     parsed = resp.json()
     logger.debug("Got feed metadata: %s", parsed)
-    return parsed['json']
+    return parsed["json"]
 
 
 def get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type):
@@ -56,7 +60,7 @@ def get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type):
     logger.debug("Got feed metadata response with http status %s", resp.status_code)
     parsed = resp.json()
     logger.debug("Got feed metadata: %s", parsed)
-    return parsed['mmdb']
+    return parsed["mmdb"]
 
 
 def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata):
@@ -65,9 +69,9 @@ def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metad
     This returns the response object so that the caller can process the feed line by line.
     Be sure to use gzip.GzipFile to decompress the response and close the file when you're done.
     """
-    location = feed_metadata['location']
+    location = feed_metadata["location"]
     if "realtime" in location:
-        location   = location.replace("realtime/", "")
+        location = location.replace("realtime/", "")
     url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
     logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
@@ -81,15 +85,19 @@ def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
     checkpoint_file_contents = ""
     try:
         # read sha values from file, if exist
-        with open(checkpoint_file_path, 'r') as file:
+        with open(checkpoint_file_path, "r") as file:
             checkpoint_file_contents = file.read()
     except:
         return {}
 
     checkpoint = json.loads(checkpoint_file_contents)
-    logger.debug("checkpoint '%s' found in checkpoint file %s",
-                checkpoint_file_contents, checkpoint_file_path)
+    logger.debug(
+        "checkpoint '%s' found in checkpoint file %s",
+        checkpoint_file_contents,
+        checkpoint_file_path,
+    )
     return checkpoint
+
 
 def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
     """
@@ -104,30 +112,43 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
 
     # Get the feed metadata
     try:
-        feed_metadata = get_feed_metadata_mmdb(logger, proxy_handler_config, token, feed_type)
+        feed_metadata = get_feed_metadata_mmdb(
+            logger, proxy_handler_config, token, feed_type
+        )
     except Exception as e:
         import traceback
+
         error_details = traceback.format_exc()
         notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
         logger.error("Error getting feed metadata: %s", e)
         logger.error("Full traceback: %s", error_details)
-        
+
         # Provide more specific error message
         if "401" in str(e) or "Unauthorized" in str(e):
-            raise Exception(f"Invalid API token when getting {feed_type} metadata. Please check your API token configuration.")
+            raise Exception(
+                f"Invalid API token when getting {feed_type} metadata. Please check your API token configuration."
+            )
         elif "403" in str(e) or "Forbidden" in str(e):
-            raise Exception(f"Access denied when getting {feed_type} metadata. Please check your API token permissions.")
+            raise Exception(
+                f"Access denied when getting {feed_type} metadata. Please check your API token permissions."
+            )
         elif "timeout" in str(e).lower():
-            raise Exception(f"Timeout when getting {feed_type} metadata. Please check network connectivity.")
+            raise Exception(
+                f"Timeout when getting {feed_type} metadata. Please check network connectivity."
+            )
         else:
-            raise Exception(f"Error getting {feed_type} metadata: {str(e) or type(e).__name__}")
+            raise Exception(
+                f"Error getting {feed_type} metadata: {str(e) or type(e).__name__}"
+            )
 
     # Process the feed
     logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     try:
         # Get the application path
-        splunk_home = os.environ['SPLUNK_HOME']
-        app_local_path = os.path.join(splunk_home, "etc", "apps", "spur-enrichment-for-splunk", "local", "data")
+        splunk_home = os.environ["SPLUNK_HOME"]
+        app_local_path = os.path.join(
+            splunk_home, "etc", "apps", "spur-enrichment-for-splunk", "local", "data"
+        )
         mmdb_file_path = os.path.join(app_local_path, "mmdb", "ipgeo.mmdb")
 
         # create the app_local_path if it doesn't exist
@@ -138,7 +159,9 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
         if not os.path.exists(os.path.join(app_local_path, "mmdb")):
             os.makedirs(os.path.join(app_local_path, "mmdb"))
 
-        response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
+        response = get_feed_response(
+            logger, proxy_handler_config, token, feed_type, feed_metadata
+        )
         feed_generation_date = response.headers.get("x-feed-generation-date")
         logger.debug("Feed generation date: %s", feed_generation_date)
 
@@ -152,10 +175,11 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
         response.close()
     except Exception as e:
         import traceback
+
         error_details = traceback.format_exc()
         logger.error("Error processing feed: %s", e)
         logger.error("Full traceback: %s", error_details)
-        
+
         # Provide more specific error message
         if "permission" in str(e).lower() or "access" in str(e).lower():
             detailed_msg = f"Permission error processing {feed_type} feed. Check file permissions for MMDB directory: {str(e)}"
@@ -164,8 +188,10 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
         elif "network" in str(e).lower() or "connection" in str(e).lower():
             detailed_msg = f"Network error processing {feed_type} feed: {str(e)}"
         else:
-            detailed_msg = f"Error processing {feed_type} feed: {str(e) or type(e).__name__}"
-            
+            detailed_msg = (
+                f"Error processing {feed_type} feed: {str(e) or type(e).__name__}"
+            )
+
         notify_feed_failure(ctx, detailed_msg)
         raise Exception(detailed_msg)
 
@@ -173,7 +199,16 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
     notify_geo_feed_success(ctx)
 
 
-def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled):
+def process_feed(
+    ctx,
+    logger,
+    token,
+    feed_type,
+    input_name,
+    ew,
+    checkpoint_file_path,
+    checkpoints_enabled,
+):
     if feed_type == "anonymous-residential/realtime":
         checkpoints_enabled = False
 
@@ -182,7 +217,9 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
 
     # Get the feed metadata
     try:
-        feed_metadata = get_feed_metadata(logger, proxy_handler_config, token, feed_type)
+        feed_metadata = get_feed_metadata(
+            logger, proxy_handler_config, token, feed_type
+        )
     except Exception as e:
         notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
         logger.error("Error getting feed metadata: %s", e)
@@ -196,35 +233,51 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     start_offset = 0
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     if checkpoints_enabled:
-        if 'completed_date' in checkpoint and checkpoint['completed_date'] == today:
+        if "completed_date" in checkpoint and checkpoint["completed_date"] == today:
             # If the current date is in the file, we've already processed the feed for today
             logger.debug("Already processed feed for today, doing nothing")
             return
-        elif 'last_touched_date' in checkpoint and checkpoint['last_touched_date'] == today:
+        elif (
+            "last_touched_date" in checkpoint
+            and checkpoint["last_touched_date"] == today
+        ):
             # If the current date is not in the file, we need to start from the offset in the file
-            logger.debug("Starting from offset %s", checkpoint['offset'])
-            start_offset = checkpoint['offset']
+            logger.debug("Starting from offset %s", checkpoint["offset"])
+            start_offset = checkpoint["offset"]
         else:
             logger.debug("Checkpoint found, but not for today")
     else:
         logger.debug("No checkpoint found, starting from offset 0")
 
     # If the latest feed location hasn't changed yet, we don't need to process the feed
-    if 'feed_metadata'in checkpoint:
+    if "feed_metadata" in checkpoint:
         logger.debug("Checkpoint file found, checking if feed location has changed")
-        if 'location' in checkpoint['feed_metadata']:
-            logger.debug("Found previous feed location: %s", checkpoint['feed_metadata']['location'])
-            if feed_metadata['location']:
-                logger.debug("Found current feed location: %s", feed_metadata['location'])
-                if checkpoint['feed_metadata']['location'] == feed_metadata['location'] and checkpoints_enabled:
-                    logger.debug("Feed location hasn't changed, doing nothing")
+        if "location" in checkpoint["feed_metadata"]:
+            logger.debug(
+                "Found previous feed location: %s",
+                checkpoint["feed_metadata"]["location"],
+            )
+            if feed_metadata["location"]:
+                logger.debug(
+                    "Found current feed location: %s", feed_metadata["location"]
+                )
+                if (
+                    checkpoint["feed_metadata"]["location"] == feed_metadata["location"]
+                    and checkpoints_enabled
+                    and checkpoint.get("completed_date") == today
+                ):
+                    logger.debug(
+                        "Feed location hasn't changed and already completed today, doing nothing"
+                    )
                     return
 
     # Process the feed
     logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
     processed = 0
     try:
-        response = get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metadata)
+        response = get_feed_response(
+            logger, proxy_handler_config, token, feed_type, feed_metadata
+        )
         logger.debug("Got feed response")
         checkpoint = {
             "offset": 0,
@@ -259,7 +312,8 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
                         logger.debug("Wrote %s events", processed)
                         if checkpoints_enabled:
                             write_checkpoint(
-                                checkpoint_file_path, json.dumps(checkpoint))
+                                checkpoint_file_path, json.dumps(checkpoint)
+                            )
                 except Exception as e:
                     logger.error("Error processing line: %s", e)
         response.close()
@@ -267,8 +321,7 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
     except Exception as e:
         checkpoint["offset"] = processed
         if checkpoints_enabled:
-            write_checkpoint(checkpoint_file_path,
-                                json.dumps(checkpoint))
+            write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
         logger.error("Error processing feed: %s", e)
         notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
         raise e
@@ -282,12 +335,11 @@ def process_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_file_
         notify_feed_success(ctx, processed)
     if checkpoints_enabled:
         logger.debug("Writing checkpoint file %s", checkpoint_file_path)
-        write_checkpoint(checkpoint_file_path,
-                            checkpoint_file_new_contents)
+        write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents)
 
 
 class SpurFeed(Script):
-    """ 
+    """
     Modular input that downloads the latest spur feed and indexes it into Splunk.
     """
 
@@ -302,7 +354,9 @@ class SpurFeed(Script):
         :return: scheme, a Scheme object
         """
         scheme = Scheme("Spur Feed")
-        scheme.description = "Downloads the latest spur feed and indexes it into Splunk."
+        scheme.description = (
+            "Downloads the latest spur feed and indexes it into Splunk."
+        )
         scheme.use_external_validation = True
 
         feed_type_argument = Argument("feed_type")
@@ -334,9 +388,17 @@ class SpurFeed(Script):
         :param validation_definition: a ValidationDefinition object
         """
         feed_type = definition.parameters["feed_type"]
-        if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime", "ipgeo"]:
+        if feed_type not in [
+            "anonymous",
+            "anonymous-ipv6",
+            "anonymous-residential",
+            "anonymous-residential-ipv6",
+            "anonymous-residential/realtime",
+            "ipgeo",
+        ]:
             raise ValueError(
-                f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
+                f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}"
+            )
 
     def stream_events(self, inputs, ew):
         """This function handles all the action: splunk calls this modular input
@@ -363,11 +425,21 @@ class SpurFeed(Script):
 
             # Get fields from the InputDefinition object
             feed_type = input_item["feed_type"]
-            if feed_type not in ["anonymous", "anonymous-ipv6", "anonymous-residential", "anonymous-residential-ipv6", "anonymous-residential/realtime", "ipgeo"]:
+            if feed_type not in [
+                "anonymous",
+                "anonymous-ipv6",
+                "anonymous-residential",
+                "anonymous-residential-ipv6",
+                "anonymous-residential/realtime",
+                "ipgeo",
+            ]:
                 notify_feed_failure(
-                    self, f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
+                    self,
+                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}",
+                )
                 raise ValueError(
-                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}")
+                    f"feed_type must be one of 'anonymous, anonymous-ipv6, anonymous-residential, anonymous-residential-ipv6, anonymous-residential/realtime, ipgeo'; found {feed_type}"
+                )
             logger.debug("feed_type: %s", feed_type)
 
             checkpoints_enabled = bool(int(input_item["enable_checkpoint"]))
@@ -381,10 +453,21 @@ class SpurFeed(Script):
                 if feed_type == "ipgeo":
                     process_geo_feed(self, logger, token, feed_type, input_name, ew)
                 else:
-                    process_feed(self, logger, token, feed_type, input_name, ew, checkpoint_file_path, checkpoints_enabled)
+                    process_feed(
+                        self,
+                        logger,
+                        token,
+                        feed_type,
+                        input_name,
+                        ew,
+                        checkpoint_file_path,
+                        checkpoints_enabled,
+                    )
             except Exception as e:
                 logger.error("Error processing feed: %s", e)
-                notify_feed_failure(self, "Error processing spur %s feed: %s" % (feed_type, e))
+                notify_feed_failure(
+                    self, "Error processing spur %s feed: %s" % (feed_type, e)
+                )
                 raise e
 
 
