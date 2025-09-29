@@ -141,8 +141,8 @@ def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metad
 
 def get_feed_identifier(logger, proxy_handler_config, token, feed_type, feed_metadata):
     """
-    Get the feed identifier (x-goog-generation) by making a HEAD request to the feed URL.
-    This allows us to get the feed identifier before downloading the full feed.
+    Get the feed identifier (x-goog-generation) by making requests to the feed URL.
+    First tries HEAD request, then falls back to a range request for just the first byte.
     
     Args:
         logger: Logger instance
@@ -161,15 +161,35 @@ def get_feed_identifier(logger, proxy_handler_config, token, feed_type, feed_met
     logger.debug("Getting feed identifier from %s", url)
     h = {"TOKEN": token}
     
+    # Try HEAD request first
     try:
-        # Make a HEAD request to get headers without downloading the full content
         response = requests.head(url, headers=h, proxies=proxy_handler_config)
-        feed_identifier = response.headers.get("x-goog-generation", "unknown")
-        logger.debug("Feed identifier (x-goog-generation): %s", feed_identifier)
-        return feed_identifier
+        feed_identifier = response.headers.get("x-goog-generation")
+        if feed_identifier:
+            logger.info("Feed identifier from HEAD request (x-goog-generation): %s", feed_identifier)
+            return feed_identifier
+        else:
+            logger.info("No x-goog-generation header in HEAD response, trying range request")
     except Exception as e:
-        logger.warning("Failed to get feed identifier, falling back to 'unknown': %s", e)
-        return "unknown"
+        logger.warn("HEAD request failed, trying range request: %s", e)
+    
+    # Fall back to range request for first byte to get headers
+    try:
+        h_range = h.copy()
+        h_range["Range"] = "bytes=0-0"
+        response = requests.get(url, headers=h_range, proxies=proxy_handler_config)
+        feed_identifier = response.headers.get("x-goog-generation")
+        response.close()
+        if feed_identifier:
+            logger.info("Feed identifier from range request (x-goog-generation): %s", feed_identifier)
+            return feed_identifier
+        else:
+            logger.warning("No x-goog-generation header found in range request either")
+    except Exception as e:
+        logger.warning("Range request also failed: %s", e)
+    
+    logger.warning("Could not get feed identifier, using 'unknown'")
+    return "unknown"
 
 
 def get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled):
@@ -425,10 +445,39 @@ def process_feed(
             )
             logger.info("Feed downloaded to temp file: %s", temp_file_path)
             
-            # Verify that the downloaded feed identifier matches what we expected
+            # Handle case where we got the real feed identifier during download
+            actual_feed_identifier = download_feed_identifier
             if download_feed_identifier != feed_identifier:
-                logger.warning("Downloaded feed identifier (%s) differs from expected (%s)", 
-                             download_feed_identifier, feed_identifier)
+                logger.info("Downloaded feed identifier (%s) differs from expected (%s), using actual identifier", 
+                           download_feed_identifier, feed_identifier)
+                
+                # If we initially got "unknown" but now have the real identifier, check if we already processed it
+                if feed_identifier == "unknown" and download_feed_identifier != "unknown":
+                    actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, download_feed_identifier)
+                    actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                    
+                    # Check if this actual feed identifier was already completed today
+                    if (checkpoints_enabled and actual_checkpoint and 
+                        actual_checkpoint.get("feed_identifier") == download_feed_identifier and 
+                        actual_checkpoint.get("completed_date") == today):
+                        logger.info("Feed identifier %s already processed today, cleaning up and skipping", download_feed_identifier)
+                        # Clean up the temp file
+                        try:
+                            os.remove(temp_file_path)
+                            logger.debug("Cleaned up temp file: %s", temp_file_path)
+                        except Exception as cleanup_e:
+                            logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
+                        return
+                    
+                    # Update our checkpoint file path and checkpoint data to use the actual identifier
+                    checkpoint_file_path = actual_checkpoint_file_path
+                    feed_identifier = download_feed_identifier
+                    checkpoint["feed_identifier"] = feed_identifier
+                    logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
+                    
+                    # Clean up old checkpoint files with the new identifier
+                    if checkpoints_enabled:
+                        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
             
             # Process the downloaded file
             with gzip.open(temp_file_path, 'rt', encoding='utf-8') as f:
@@ -469,10 +518,33 @@ def process_feed(
             logger.info("Feed generation date: %s", feed_generation_date)
             logger.info("x-goog-generation: %s", stream_feed_identifier)
             
-            # Verify that the stream feed identifier matches what we expected
+            # Handle case where we got the real feed identifier during streaming
             if stream_feed_identifier != feed_identifier:
-                logger.warning("Stream feed identifier (%s) differs from expected (%s)", 
-                             stream_feed_identifier, feed_identifier)
+                logger.info("Stream feed identifier (%s) differs from expected (%s), using actual identifier", 
+                           stream_feed_identifier, feed_identifier)
+                
+                # If we initially got "unknown" but now have the real identifier, check if we already processed it
+                if feed_identifier == "unknown" and stream_feed_identifier != "unknown":
+                    actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, stream_feed_identifier)
+                    actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                    
+                    # Check if this actual feed identifier was already completed today
+                    if (checkpoints_enabled and actual_checkpoint and 
+                        actual_checkpoint.get("feed_identifier") == stream_feed_identifier and 
+                        actual_checkpoint.get("completed_date") == today):
+                        logger.info("Feed identifier %s already processed today, closing response and skipping", stream_feed_identifier)
+                        response.close()
+                        return
+                    
+                    # Update our checkpoint file path and checkpoint data to use the actual identifier
+                    checkpoint_file_path = actual_checkpoint_file_path
+                    feed_identifier = stream_feed_identifier
+                    checkpoint["feed_identifier"] = feed_identifier
+                    logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
+                    
+                    # Clean up old checkpoint files with the new identifier
+                    if checkpoints_enabled:
+                        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
             
             with gzip.GzipFile(fileobj=response.raw) as f:
                 for line in f:
