@@ -385,6 +385,10 @@ def process_feed(
         logger.warning("Failed to get feed identifier, using 'unknown': %s", e)
         feed_identifier = "unknown"
 
+    # Extract the feed date from metadata
+    feed_date = feed_metadata.get("date", "unknown")
+    logger.info("Feed date: %s", feed_date)
+
     # Generate checkpoint file path using feed identifier
     checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, feed_identifier)
     logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
@@ -433,6 +437,7 @@ def process_feed(
             "last_touched_date": today,
             "feed_metadata": feed_metadata,
             "feed_identifier": feed_identifier,
+            "feed_date": feed_date,
         }
         if checkpoints_enabled:
             write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
@@ -484,8 +489,9 @@ def process_feed(
                 for line in f:
                     try:
                         data = json.loads(line)
-                        # Add feed_identifier to the data
+                        # Add feed_identifier and feed_date to the data
                         data["feed_identifier"] = feed_identifier
+                        data["feed_date"] = feed_date
                         event = Event()
                         event.stanza = input_name
                         event.sourceType = "spur_feed"
@@ -550,8 +556,9 @@ def process_feed(
                 for line in f:
                     try:
                         data = json.loads(line.decode("utf-8"))
-                        # Add feed_identifier to the data
+                        # Add feed_identifier and feed_date to the data
                         data["feed_identifier"] = feed_identifier
+                        data["feed_date"] = feed_date
                         event = Event()
                         event.stanza = input_name
                         event.sourceType = "spur_feed"
