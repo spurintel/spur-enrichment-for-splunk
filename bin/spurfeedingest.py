@@ -5,6 +5,7 @@ import gzip
 import requests
 import time
 import tempfile
+import fcntl
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "splunklib"))
@@ -30,6 +31,137 @@ def write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents):
     """
     with open(checkpoint_file_path, "w") as file:
         file.write(checkpoint_file_new_contents)
+
+
+def get_lock_file_path(checkpoint_dir, feed_type):
+    """
+    Generate lock file path for a given feed type.
+    
+    Args:
+        checkpoint_dir: Directory for lock files
+        feed_type: Type of feed
+        
+    Returns:
+        str: Path to lock file
+    """
+    safe_feed_type = feed_type.replace("/", "_").replace("\\", "_")
+    lock_filename = f"{safe_feed_type}.lock"
+    return os.path.join(checkpoint_dir, lock_filename)
+
+
+def is_lock_stale(lock_file_path, max_age_seconds=86400):
+    """
+    Check if a lock file is stale (older than max_age_seconds).
+    
+    Args:
+        lock_file_path: Path to the lock file
+        max_age_seconds: Maximum age in seconds before considering lock stale (default 24 hours)
+        
+    Returns:
+        bool: True if lock is stale or doesn't exist, False otherwise
+    """
+    if not os.path.exists(lock_file_path):
+        return True
+    
+    try:
+        lock_age = time.time() - os.path.getmtime(lock_file_path)
+        return lock_age > max_age_seconds
+    except Exception:
+        return True
+
+
+def acquire_lock(logger, lock_file_path):
+    """
+    Acquire a lock for feed processing using file locking.
+    Returns a file handle that must be kept open, or None if lock cannot be acquired.
+    
+    Args:
+        logger: Logger instance
+        lock_file_path: Path to the lock file
+        
+    Returns:
+        file handle if lock acquired, None otherwise
+    """
+    try:
+        # Ensure the directory exists
+        lock_dir = os.path.dirname(lock_file_path)
+        if not os.path.exists(lock_dir):
+            os.makedirs(lock_dir)
+        
+        # Open the lock file
+        lock_file = open(lock_file_path, 'w')
+        
+        # Try to acquire an exclusive lock (non-blocking)
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Write process info to lock file
+            lock_info = {
+                "pid": os.getpid(),
+                "timestamp": time.time(),
+                "iso_time": datetime.now(timezone.utc).isoformat()
+            }
+            lock_file.write(json.dumps(lock_info))
+            lock_file.flush()
+            logger.info("Successfully acquired lock: %s", lock_file_path)
+            return lock_file
+        except IOError:
+            # Lock is held by another process
+            lock_file.close()
+            logger.warning("Could not acquire lock (already held by another process): %s", lock_file_path)
+            return None
+            
+    except Exception as e:
+        logger.error("Error acquiring lock: %s", e)
+        return None
+
+
+def release_lock(logger, lock_file_handle, lock_file_path):
+    """
+    Release a previously acquired lock.
+    
+    Args:
+        logger: Logger instance
+        lock_file_handle: File handle returned by acquire_lock
+        lock_file_path: Path to the lock file
+    """
+    if lock_file_handle is None:
+        return
+    
+    try:
+        # Release the lock
+        fcntl.flock(lock_file_handle.fileno(), fcntl.LOCK_UN)
+        lock_file_handle.close()
+        
+        # Remove the lock file
+        if os.path.exists(lock_file_path):
+            os.remove(lock_file_path)
+        
+        logger.info("Successfully released lock: %s", lock_file_path)
+    except Exception as e:
+        logger.warning("Error releasing lock: %s", e)
+
+
+def cleanup_stale_lock(logger, lock_file_path, max_age_seconds=86400):
+    """
+    Remove stale lock files that are older than max_age_seconds.
+    
+    Args:
+        logger: Logger instance
+        lock_file_path: Path to the lock file
+        max_age_seconds: Maximum age in seconds before considering lock stale (default 24 hours)
+        
+    Returns:
+        bool: True if stale lock was removed, False otherwise
+    """
+    if is_lock_stale(lock_file_path, max_age_seconds):
+        try:
+            if os.path.exists(lock_file_path):
+                os.remove(lock_file_path)
+                logger.info("Removed stale lock file: %s", lock_file_path)
+                return True
+        except Exception as e:
+            logger.warning("Failed to remove stale lock file %s: %s", lock_file_path, e)
+    return False
 
 
 def cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, current_feed_identifier):
@@ -248,7 +380,7 @@ def download_feed_to_temp(logger, proxy_handler_config, token, feed_type, feed_m
         raise e
 
 
-def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
+def process_geo_feed(ctx, logger, token, feed_type, input_name, ew, checkpoint_dir):
     """
     Process the geo feed.
     """
@@ -256,96 +388,114 @@ def process_geo_feed(ctx, logger, token, feed_type, input_name, ew):
     logger.debug("feed_type: %s", feed_type)
     logger.debug("input_name: %s", input_name)
     logger.debug("ew: %s", ew)
+    
+    # Get lock file path and attempt to acquire lock
+    lock_file_path = get_lock_file_path(checkpoint_dir, feed_type)
+    logger.debug("lock_file_path: %s", lock_file_path)
+    
+    # Clean up stale locks (older than 24 hours)
+    cleanup_stale_lock(logger, lock_file_path)
+    
+    # Try to acquire the lock
+    lock_handle = acquire_lock(logger, lock_file_path)
+    if lock_handle is None:
+        logger.warning("Another instance is already processing feed type '%s', skipping", feed_type)
+        return
+    
     proxy_handler_config = get_proxy_settings(ctx, logger)
     logger.debug("proxy_handler_config: %s", proxy_handler_config)
 
-    # Get the feed metadata
     try:
-        feed_metadata = get_feed_metadata_mmdb(
-            logger, proxy_handler_config, token, feed_type
-        )
-    except Exception as e:
-        import traceback
-
-        error_details = traceback.format_exc()
-        notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
-        logger.error("Error getting feed metadata: %s", e)
-        logger.error("Full traceback: %s", error_details)
-
-        # Provide more specific error message
-        if "401" in str(e) or "Unauthorized" in str(e):
-            raise Exception(
-                f"Invalid API token when getting {feed_type} metadata. Please check your API token configuration."
+        # Get the feed metadata
+        try:
+            feed_metadata = get_feed_metadata_mmdb(
+                logger, proxy_handler_config, token, feed_type
             )
-        elif "403" in str(e) or "Forbidden" in str(e):
-            raise Exception(
-                f"Access denied when getting {feed_type} metadata. Please check your API token permissions."
+        except Exception as e:
+            import traceback
+
+            error_details = traceback.format_exc()
+            notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
+            logger.error("Error getting feed metadata: %s", e)
+            logger.error("Full traceback: %s", error_details)
+
+            # Provide more specific error message
+            if "401" in str(e) or "Unauthorized" in str(e):
+                raise Exception(
+                    f"Invalid API token when getting {feed_type} metadata. Please check your API token configuration."
+                )
+            elif "403" in str(e) or "Forbidden" in str(e):
+                raise Exception(
+                    f"Access denied when getting {feed_type} metadata. Please check your API token permissions."
+                )
+            elif "timeout" in str(e).lower():
+                raise Exception(
+                    f"Timeout when getting {feed_type} metadata. Please check network connectivity."
+                )
+            else:
+                raise Exception(
+                    f"Error getting {feed_type} metadata: {str(e) or type(e).__name__}"
+                )
+
+        # Process the feed
+        logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+        try:
+            # Get the application path
+            splunk_home = os.environ["SPLUNK_HOME"]
+            app_local_path = os.path.join(
+                splunk_home, "etc", "apps", "spur-enrichment-for-splunk", "local", "data"
             )
-        elif "timeout" in str(e).lower():
-            raise Exception(
-                f"Timeout when getting {feed_type} metadata. Please check network connectivity."
+            mmdb_file_path = os.path.join(app_local_path, "mmdb", "ipgeo.mmdb")
+
+            # create the app_local_path if it doesn't exist
+            if not os.path.exists(app_local_path):
+                os.makedirs(app_local_path)
+
+            # create the mmdb directory if it doesn't exist
+            if not os.path.exists(os.path.join(app_local_path, "mmdb")):
+                os.makedirs(os.path.join(app_local_path, "mmdb"))
+
+            response = get_feed_response(
+                logger, proxy_handler_config, token, feed_type, feed_metadata
             )
-        else:
-            raise Exception(
-                f"Error getting {feed_type} metadata: {str(e) or type(e).__name__}"
-            )
+            feed_generation_date = response.headers.get("x-feed-generation-date")
+            logger.debug("Feed generation date: %s", feed_generation_date)
 
-    # Process the feed
-    logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
-    try:
-        # Get the application path
-        splunk_home = os.environ["SPLUNK_HOME"]
-        app_local_path = os.path.join(
-            splunk_home, "etc", "apps", "spur-enrichment-for-splunk", "local", "data"
-        )
-        mmdb_file_path = os.path.join(app_local_path, "mmdb", "ipgeo.mmdb")
+            # Write the feed to the mmdb file
+            with open(mmdb_file_path, "wb") as f:
+                f.write(response.raw.read())
 
-        # create the app_local_path if it doesn't exist
-        if not os.path.exists(app_local_path):
-            os.makedirs(app_local_path)
+            # Make the MMDB file world readable
+            os.chmod(mmdb_file_path, 0o644)
 
-        # create the mmdb directory if it doesn't exist
-        if not os.path.exists(os.path.join(app_local_path, "mmdb")):
-            os.makedirs(os.path.join(app_local_path, "mmdb"))
+            response.close()
+        except Exception as e:
+            import traceback
 
-        response = get_feed_response(
-            logger, proxy_handler_config, token, feed_type, feed_metadata
-        )
-        feed_generation_date = response.headers.get("x-feed-generation-date")
-        logger.debug("Feed generation date: %s", feed_generation_date)
+            error_details = traceback.format_exc()
+            logger.error("Error processing feed: %s", e)
+            logger.error("Full traceback: %s", error_details)
 
-        # Write the feed to the mmdb file
-        with open(mmdb_file_path, "wb") as f:
-            f.write(response.raw.read())
+            # Provide more specific error message
+            if "permission" in str(e).lower() or "access" in str(e).lower():
+                detailed_msg = f"Permission error processing {feed_type} feed. Check file permissions for MMDB directory: {str(e)}"
+            elif "disk" in str(e).lower() or "space" in str(e).lower():
+                detailed_msg = f"Disk space error processing {feed_type} feed: {str(e)}"
+            elif "network" in str(e).lower() or "connection" in str(e).lower():
+                detailed_msg = f"Network error processing {feed_type} feed: {str(e)}"
+            else:
+                detailed_msg = (
+                    f"Error processing {feed_type} feed: {str(e) or type(e).__name__}"
+                )
 
-        # Make the MMDB file world readable
-        os.chmod(mmdb_file_path, 0o644)
+            notify_feed_failure(ctx, detailed_msg)
+            raise Exception(detailed_msg)
 
-        response.close()
-    except Exception as e:
-        import traceback
-
-        error_details = traceback.format_exc()
-        logger.error("Error processing feed: %s", e)
-        logger.error("Full traceback: %s", error_details)
-
-        # Provide more specific error message
-        if "permission" in str(e).lower() or "access" in str(e).lower():
-            detailed_msg = f"Permission error processing {feed_type} feed. Check file permissions for MMDB directory: {str(e)}"
-        elif "disk" in str(e).lower() or "space" in str(e).lower():
-            detailed_msg = f"Disk space error processing {feed_type} feed: {str(e)}"
-        elif "network" in str(e).lower() or "connection" in str(e).lower():
-            detailed_msg = f"Network error processing {feed_type} feed: {str(e)}"
-        else:
-            detailed_msg = (
-                f"Error processing {feed_type} feed: {str(e) or type(e).__name__}"
-            )
-
-        notify_feed_failure(ctx, detailed_msg)
-        raise Exception(detailed_msg)
-
-    # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
-    notify_geo_feed_success(ctx)
+        # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
+        notify_geo_feed_success(ctx)
+    finally:
+        # Always release the lock
+        release_lock(logger, lock_handle, lock_file_path)
 
 
 def process_feed(
@@ -362,232 +512,266 @@ def process_feed(
     if feed_type == "anonymous-residential/realtime":
         checkpoints_enabled = False
 
+    # Get lock file path and attempt to acquire lock
+    lock_file_path = get_lock_file_path(checkpoint_dir, feed_type)
+    logger.debug("lock_file_path: %s", lock_file_path)
+    
+    # Clean up stale locks (older than 24 hours)
+    cleanup_stale_lock(logger, lock_file_path)
+    
+    # Try to acquire the lock
+    lock_handle = acquire_lock(logger, lock_file_path)
+    if lock_handle is None:
+        logger.warning("Another instance is already processing feed type '%s', skipping", feed_type)
+        return
+
     proxy_handler_config = get_proxy_settings(ctx, logger)
     logger.debug("proxy_handler_config: %s", proxy_handler_config)
 
-    # Get the feed metadata
     try:
-        feed_metadata = get_feed_metadata(
-            logger, proxy_handler_config, token, feed_type
-        )
-    except Exception as e:
-        notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
-        logger.error("Error getting feed metadata: %s", e)
-        raise e
+        # Get the feed metadata
+        try:
+            feed_metadata = get_feed_metadata(
+                logger, proxy_handler_config, token, feed_type
+            )
+        except Exception as e:
+            notify_feed_failure(ctx, "Error getting spur %s feed metadata" % feed_type)
+            logger.error("Error getting feed metadata: %s", e)
+            raise e
 
-    # Get the feed identifier early to use for checkpoint naming and uniqueness
-    try:
-        feed_identifier = get_feed_identifier(
-            logger, proxy_handler_config, token, feed_type, feed_metadata
-        )
-        logger.info("Feed identifier: %s", feed_identifier)
-    except Exception as e:
-        logger.warning("Failed to get feed identifier, using 'unknown': %s", e)
-        feed_identifier = "unknown"
-
-    # Extract the feed date from metadata
-    feed_date = feed_metadata.get("date", "unknown")
-    logger.info("Feed date: %s", feed_date)
-
-    # Generate checkpoint file path using feed identifier
-    checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, feed_identifier)
-    logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
-
-    # Clean up old checkpoint files for this feed type
-    if checkpoints_enabled:
-        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
-
-    # Get the latest checkpoint for this specific feed identifier
-    checkpoint = get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled)
-
-    # Check if we've already processed this specific feed identifier
-    start_offset = 0
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    if checkpoints_enabled and checkpoint:
-        # Check if this exact feed identifier was already completed
-        if (checkpoint.get("feed_identifier") == feed_identifier and 
-            checkpoint.get("completed_date") == today):
-            logger.info("Feed identifier %s already processed today, skipping", feed_identifier)
-            return
-        elif (checkpoint.get("feed_identifier") == feed_identifier and 
-              checkpoint.get("last_touched_date") == today and 
-              "offset" in checkpoint):
-            # Same feed identifier, same day, but not completed - resume from offset
-            logger.info("Resuming processing of feed identifier %s from offset %s", 
-                       feed_identifier, checkpoint["offset"])
-            start_offset = checkpoint["offset"]
-        else:
-            # Different feed identifier or different day - start fresh
-            logger.info("Starting fresh processing for feed identifier %s", feed_identifier)
-            start_offset = 0
-    else:
-        logger.info("No checkpoint found or checkpoints disabled, starting from offset 0")
-
-    # Process the feed
-    logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
-    processed = 0
-    temp_file_path = None
-    
-    try:
-        checkpoint = {
-            "offset": start_offset,
-            "start_time": time.time(),
-            "end_time": None,
-            "completed_date": None,
-            "last_touched_date": today,
-            "feed_metadata": feed_metadata,
-            "feed_identifier": feed_identifier,
-            "feed_date": feed_date,
-        }
-        if checkpoints_enabled:
-            write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
-
-        if predownload_enabled:
-            # Download feed to temporary file first
-            logger.debug("Pre-download mode enabled, downloading feed to temp file")
-            temp_file_path, download_feed_identifier = download_feed_to_temp(
+        # Get the feed identifier early to use for checkpoint naming and uniqueness
+        try:
+            feed_identifier = get_feed_identifier(
                 logger, proxy_handler_config, token, feed_type, feed_metadata
             )
-            logger.info("Feed downloaded to temp file: %s", temp_file_path)
-            
-            # Handle case where we got the real feed identifier during download
-            actual_feed_identifier = download_feed_identifier
-            if download_feed_identifier != feed_identifier:
-                logger.info("Downloaded feed identifier (%s) differs from expected (%s), using actual identifier", 
-                           download_feed_identifier, feed_identifier)
+            logger.info("Feed identifier: %s", feed_identifier)
+        except Exception as e:
+            logger.warning("Failed to get feed identifier, using 'unknown': %s", e)
+            feed_identifier = "unknown"
+
+        # Extract the feed date from metadata
+        feed_date = feed_metadata.get("date", "unknown")
+        logger.info("Feed date: %s", feed_date)
+
+        # Generate checkpoint file path using feed identifier
+        checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, feed_identifier)
+        logger.debug("checkpoint_file_path: %s", checkpoint_file_path)
+
+        # Clean up old checkpoint files for this feed type
+        if checkpoints_enabled:
+            cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
+
+        # Get the latest checkpoint for this specific feed identifier
+        checkpoint = get_checkpoint(logger, checkpoint_file_path, checkpoints_enabled)
+
+        # Check if we've already processed this specific feed identifier
+        start_offset = 0
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        if checkpoints_enabled and checkpoint:
+            # Check if this exact feed identifier was already completed
+            if (checkpoint.get("feed_identifier") == feed_identifier and 
+                checkpoint.get("completed_date") == today):
+                logger.info("Feed identifier %s already processed today, skipping", feed_identifier)
+                return
+            elif (checkpoint.get("feed_identifier") == feed_identifier and 
+                  checkpoint.get("last_touched_date") == today and 
+                  "offset" in checkpoint):
+                # Same feed identifier, same day, but not completed - resume from offset
+                logger.info("Resuming processing of feed identifier %s from offset %s", 
+                           feed_identifier, checkpoint["offset"])
+                start_offset = checkpoint["offset"]
+            else:
+                # Different feed identifier or different day - start fresh
+                logger.info("Starting fresh processing for feed identifier %s", feed_identifier)
+                start_offset = 0
+        else:
+            logger.info("No checkpoint found or checkpoints disabled, starting from offset 0")
+
+        # Process the feed
+        logger.debug("Attempting to retrieve feed with feed metadata: %s", feed_metadata)
+        processed = 0
+        temp_file_path = None
+        
+        try:
+            checkpoint = {
+                "offset": start_offset,
+                "start_time": time.time(),
+                "end_time": None,
+                "completed_date": None,
+                "last_touched_date": today,
+                "feed_metadata": feed_metadata,
+                "feed_identifier": feed_identifier,
+                "feed_date": feed_date,
+            }
+            if checkpoints_enabled:
+                write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
+
+            if predownload_enabled:
+                # Download feed to temporary file first
+                logger.debug("Pre-download mode enabled, downloading feed to temp file")
+                temp_file_path, download_feed_identifier = download_feed_to_temp(
+                    logger, proxy_handler_config, token, feed_type, feed_metadata
+                )
+                logger.info("Feed downloaded to temp file: %s", temp_file_path)
                 
-                # If we initially got "unknown" but now have the real identifier, check if we already processed it
-                if feed_identifier == "unknown" and download_feed_identifier != "unknown":
-                    actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, download_feed_identifier)
-                    actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                # Handle case where we got the real feed identifier during download
+                actual_feed_identifier = download_feed_identifier
+                if download_feed_identifier != feed_identifier:
+                    logger.info("Downloaded feed identifier (%s) differs from expected (%s), using actual identifier", 
+                               download_feed_identifier, feed_identifier)
                     
-                    # Check if this actual feed identifier was already completed today
-                    if (checkpoints_enabled and actual_checkpoint and 
-                        actual_checkpoint.get("feed_identifier") == download_feed_identifier and 
-                        actual_checkpoint.get("completed_date") == today):
-                        logger.info("Feed identifier %s already processed today, cleaning up and skipping", download_feed_identifier)
-                        # Clean up the temp file
+                    # If we initially got "unknown" but now have the real identifier, check if we already processed it
+                    if feed_identifier == "unknown" and download_feed_identifier != "unknown":
+                        actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, download_feed_identifier)
+                        actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                        
+                        # Check if this actual feed identifier was already completed today
+                        if (checkpoints_enabled and actual_checkpoint and 
+                            actual_checkpoint.get("feed_identifier") == download_feed_identifier and 
+                            actual_checkpoint.get("completed_date") == today):
+                            logger.info("Feed identifier %s already processed today, cleaning up and skipping", download_feed_identifier)
+                            # Clean up the temp file
+                            try:
+                                os.remove(temp_file_path)
+                                logger.debug("Cleaned up temp file: %s", temp_file_path)
+                            except Exception as cleanup_e:
+                                logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
+                            return
+                        
+                        # Update our checkpoint file path and checkpoint data to use the actual identifier
+                        checkpoint_file_path = actual_checkpoint_file_path
+                        feed_identifier = download_feed_identifier
+                        checkpoint["feed_identifier"] = feed_identifier
+                        logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
+                        
+                        # Clean up old checkpoint files with the new identifier
+                        if checkpoints_enabled:
+                            cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
+                
+                # Process the downloaded file
+                with gzip.open(temp_file_path, 'rt', encoding='utf-8') as f:
+                    for line in f:
                         try:
-                            os.remove(temp_file_path)
-                            logger.debug("Cleaned up temp file: %s", temp_file_path)
-                        except Exception as cleanup_e:
-                            logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
-                        return
-                    
-                    # Update our checkpoint file path and checkpoint data to use the actual identifier
-                    checkpoint_file_path = actual_checkpoint_file_path
-                    feed_identifier = download_feed_identifier
-                    checkpoint["feed_identifier"] = feed_identifier
-                    logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
-                    
-                    # Clean up old checkpoint files with the new identifier
-                    if checkpoints_enabled:
-                        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
-            
-            # Process the downloaded file
-            with gzip.open(temp_file_path, 'rt', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        # Add feed_identifier and feed_date to the data
-                        data["feed_identifier"] = feed_identifier
-                        data["feed_date"] = feed_date
-                        event = Event()
-                        event.stanza = input_name
-                        event.sourceType = "spur_feed"
-                        event.time = time.time()
-                        event.data = json.dumps(data)
-                        processed += 1
+                            data = json.loads(line)
+                            # Add feed_identifier and feed_date to the data
+                            data["feed_identifier"] = feed_identifier
+                            data["feed_date"] = feed_date
+                            event = Event()
+                            event.stanza = input_name
+                            event.sourceType = "spur_feed"
+                            event.time = time.time()
+                            event.data = json.dumps(data)
+                            processed += 1
 
-                        if processed < start_offset:
-                            continue
-                        ew.write_event(event)
-                        checkpoint["offset"] = processed
+                            if processed < start_offset:
+                                continue
+                            ew.write_event(event)
+                            checkpoint["offset"] = processed
 
-                        if processed % 10000 == 0:
-                            logger.debug("Wrote %s events", processed)
-                            if checkpoints_enabled:
-                                write_checkpoint(
-                                    checkpoint_file_path, json.dumps(checkpoint)
-                                )
-                    except Exception as e:
-                        logger.error("Error processing line: %s", e)
-        else:
-            # Stream mode (original behavior)
-            response = get_feed_response(
-                logger, proxy_handler_config, token, feed_type, feed_metadata
-            )
-            logger.info("Got feed response")
-            feed_generation_date = response.headers.get("x-feed-generation-date")
-            stream_feed_identifier = response.headers.get("x-goog-generation", "unknown")
-            checkpoint["feed_generation_date"] = feed_generation_date
-            logger.info("Feed generation date: %s", feed_generation_date)
-            logger.info("x-goog-generation: %s", stream_feed_identifier)
-            
-            # Handle case where we got the real feed identifier during streaming
-            if stream_feed_identifier != feed_identifier:
-                logger.info("Stream feed identifier (%s) differs from expected (%s), using actual identifier", 
-                           stream_feed_identifier, feed_identifier)
+                            if processed % 10000 == 0:
+                                logger.debug("Wrote %s events", processed)
+                                if checkpoints_enabled:
+                                    write_checkpoint(
+                                        checkpoint_file_path, json.dumps(checkpoint)
+                                    )
+                        except Exception as e:
+                            logger.error("Error processing line: %s", e)
+            else:
+                # Stream mode (original behavior)
+                response = get_feed_response(
+                    logger, proxy_handler_config, token, feed_type, feed_metadata
+                )
+                logger.info("Got feed response")
+                feed_generation_date = response.headers.get("x-feed-generation-date")
+                stream_feed_identifier = response.headers.get("x-goog-generation", "unknown")
+                checkpoint["feed_generation_date"] = feed_generation_date
+                logger.info("Feed generation date: %s", feed_generation_date)
+                logger.info("x-goog-generation: %s", stream_feed_identifier)
                 
-                # If we initially got "unknown" but now have the real identifier, check if we already processed it
-                if feed_identifier == "unknown" and stream_feed_identifier != "unknown":
-                    actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, stream_feed_identifier)
-                    actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                # Handle case where we got the real feed identifier during streaming
+                if stream_feed_identifier != feed_identifier:
+                    logger.info("Stream feed identifier (%s) differs from expected (%s), using actual identifier", 
+                               stream_feed_identifier, feed_identifier)
                     
-                    # Check if this actual feed identifier was already completed today
-                    if (checkpoints_enabled and actual_checkpoint and 
-                        actual_checkpoint.get("feed_identifier") == stream_feed_identifier and 
-                        actual_checkpoint.get("completed_date") == today):
-                        logger.info("Feed identifier %s already processed today, closing response and skipping", stream_feed_identifier)
-                        response.close()
-                        return
-                    
-                    # Update our checkpoint file path and checkpoint data to use the actual identifier
-                    checkpoint_file_path = actual_checkpoint_file_path
-                    feed_identifier = stream_feed_identifier
-                    checkpoint["feed_identifier"] = feed_identifier
-                    logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
-                    
-                    # Clean up old checkpoint files with the new identifier
-                    if checkpoints_enabled:
-                        cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
-            
-            with gzip.GzipFile(fileobj=response.raw) as f:
-                for line in f:
-                    try:
-                        data = json.loads(line.decode("utf-8"))
-                        # Add feed_identifier and feed_date to the data
-                        data["feed_identifier"] = feed_identifier
-                        data["feed_date"] = feed_date
-                        event = Event()
-                        event.stanza = input_name
-                        event.sourceType = "spur_feed"
-                        event.time = time.time()
-                        event.data = json.dumps(data)
-                        processed += 1
+                    # If we initially got "unknown" but now have the real identifier, check if we already processed it
+                    if feed_identifier == "unknown" and stream_feed_identifier != "unknown":
+                        actual_checkpoint_file_path = get_checkpoint_file_path(checkpoint_dir, feed_type, stream_feed_identifier)
+                        actual_checkpoint = get_checkpoint(logger, actual_checkpoint_file_path, checkpoints_enabled)
+                        
+                        # Check if this actual feed identifier was already completed today
+                        if (checkpoints_enabled and actual_checkpoint and 
+                            actual_checkpoint.get("feed_identifier") == stream_feed_identifier and 
+                            actual_checkpoint.get("completed_date") == today):
+                            logger.info("Feed identifier %s already processed today, closing response and skipping", stream_feed_identifier)
+                            response.close()
+                            return
+                        
+                        # Update our checkpoint file path and checkpoint data to use the actual identifier
+                        checkpoint_file_path = actual_checkpoint_file_path
+                        feed_identifier = stream_feed_identifier
+                        checkpoint["feed_identifier"] = feed_identifier
+                        logger.info("Updated checkpoint to use actual feed identifier: %s", feed_identifier)
+                        
+                        # Clean up old checkpoint files with the new identifier
+                        if checkpoints_enabled:
+                            cleanup_old_checkpoints(logger, checkpoint_dir, feed_type, feed_identifier)
+                
+                with gzip.GzipFile(fileobj=response.raw) as f:
+                    for line in f:
+                        try:
+                            data = json.loads(line.decode("utf-8"))
+                            # Add feed_identifier and feed_date to the data
+                            data["feed_identifier"] = feed_identifier
+                            data["feed_date"] = feed_date
+                            event = Event()
+                            event.stanza = input_name
+                            event.sourceType = "spur_feed"
+                            event.time = time.time()
+                            event.data = json.dumps(data)
+                            processed += 1
 
-                        if processed < start_offset:
-                            continue
-                        ew.write_event(event)
-                        checkpoint["offset"] = processed
+                            if processed < start_offset:
+                                continue
+                            ew.write_event(event)
+                            checkpoint["offset"] = processed
 
-                        if processed % 10000 == 0:
-                            logger.debug("Wrote %s events", processed)
-                            if checkpoints_enabled:
-                                write_checkpoint(
-                                    checkpoint_file_path, json.dumps(checkpoint)
-                                )
-                    except Exception as e:
-                        logger.error("Error processing line: %s", e)
-            response.close()
-            
-        checkpoint["offset"] = processed
-    except Exception as e:
-        checkpoint["offset"] = processed
+                            if processed % 10000 == 0:
+                                logger.debug("Wrote %s events", processed)
+                                if checkpoints_enabled:
+                                    write_checkpoint(
+                                        checkpoint_file_path, json.dumps(checkpoint)
+                                    )
+                        except Exception as e:
+                            logger.error("Error processing line: %s", e)
+                response.close()
+                
+            checkpoint["offset"] = processed
+        except Exception as e:
+            checkpoint["offset"] = processed
+            if checkpoints_enabled:
+                write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
+            logger.error("Error processing feed: %s", e)
+            notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
+            # Clean up temp file if it exists
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                    logger.debug("Cleaned up temp file: %s", temp_file_path)
+                except Exception as cleanup_e:
+                    logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
+            raise e
+
+        # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
+        checkpoint["end_time"] = time.time()
+        checkpoint["completed_date"] = today
+        checkpoint_file_new_contents = json.dumps(checkpoint)
+        logger.info("Wrote %s events", processed)
+        if "realtime" not in feed_type:
+            notify_feed_success(ctx, processed)
         if checkpoints_enabled:
-            write_checkpoint(checkpoint_file_path, json.dumps(checkpoint))
-        logger.error("Error processing feed: %s", e)
-        notify_feed_failure(ctx, "Error processing spur %s feed: %s" % (feed_type, e))
+            logger.debug("Writing checkpoint file %s", checkpoint_file_path)
+            write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents)
+        
         # Clean up temp file if it exists
         if temp_file_path and os.path.exists(temp_file_path):
             try:
@@ -595,26 +779,9 @@ def process_feed(
                 logger.debug("Cleaned up temp file: %s", temp_file_path)
             except Exception as cleanup_e:
                 logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
-        raise e
-
-    # If we get here, we've successfully processed the feed, write out the date to the checkpoint file
-    checkpoint["end_time"] = time.time()
-    checkpoint["completed_date"] = today
-    checkpoint_file_new_contents = json.dumps(checkpoint)
-    logger.info("Wrote %s events", processed)
-    if "realtime" not in feed_type:
-        notify_feed_success(ctx, processed)
-    if checkpoints_enabled:
-        logger.debug("Writing checkpoint file %s", checkpoint_file_path)
-        write_checkpoint(checkpoint_file_path, checkpoint_file_new_contents)
-    
-    # Clean up temp file if it exists
-    if temp_file_path and os.path.exists(temp_file_path):
-        try:
-            os.remove(temp_file_path)
-            logger.debug("Cleaned up temp file: %s", temp_file_path)
-        except Exception as cleanup_e:
-            logger.warning("Failed to clean up temp file %s: %s", temp_file_path, cleanup_e)
+    finally:
+        # Always release the lock
+        release_lock(logger, lock_handle, lock_file_path)
 
 
 class SpurFeed(Script):
@@ -741,7 +908,7 @@ class SpurFeed(Script):
 
             try:
                 if feed_type == "ipgeo":
-                    process_geo_feed(self, logger, token, feed_type, input_name, ew)
+                    process_geo_feed(self, logger, token, feed_type, input_name, ew, checkpoint_dir)
                 else:
                     process_feed(
                         self,
