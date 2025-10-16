@@ -261,8 +261,17 @@ def download_mmdb_if_needed(ctx, logger, mmdb_path):
         if not token or token == "":
             raise ValueError("No Spur API token configured. Please configure your Spur API token in the setup page.")
         
+        # Use the same checkpoint directory as the spurfeedingest modular input
+        # so that lock files are shared and prevent concurrent downloads
+        splunk_home = os.environ.get('SPLUNK_HOME', '/opt/splunk')
+        checkpoint_dir = os.path.join(splunk_home, 'var', 'lib', 'splunk', 'modinputs', 'spurfeedingest')
+        
+        # Ensure checkpoint directory exists
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir, exist_ok=True)
+        
         # Use the existing process_geo_feed function to handle the complete download
-        process_geo_feed(ctx, logger, token, "ipgeo", "spuriplocation", None)
+        process_geo_feed(ctx, logger, token, "ipgeo", "spuriplocation", None, checkpoint_dir)
         
         # Verify the file was created
         if not os.path.exists(mmdb_path):
