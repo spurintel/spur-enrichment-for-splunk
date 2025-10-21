@@ -233,6 +233,7 @@ def get_feed_metadata(logger, proxy_handler_config, token, feed_type):
     url = "/".join(["https://feeds.spur.us/v2", feed_type, "latest"])
     logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
+    logger.debug("headers: %s", h)
     resp = requests.get(url, headers=h, proxies=proxy_handler_config)
     logger.debug("Got feed metadata response with http status %s", resp.status_code)
     parsed = resp.json()
@@ -268,6 +269,7 @@ def get_feed_response(logger, proxy_handler_config, token, feed_type, feed_metad
     url = "/".join(["https://feeds.spur.us/v2", feed_type, location])
     logger.debug("Requesting %s", url)
     h = {"TOKEN": token}
+    logger.debug("headers: %s", h)
     return requests.get(url, headers=h, proxies=proxy_handler_config, stream=True)
 
 

@@ -1,5 +1,7 @@
 "use strict";
 
+const SCRIPT_VERSION = "2.0.0"; // Updated to support settings page without blocking
+
 const appName = "spur-enrichment-for-splunk";
 const appNamespace = {
     owner: "nobody",
@@ -13,12 +15,19 @@ const pwName = "token";
 require([
     "jquery", "splunkjs/splunk",
 ], function($, splunkjs) {
-    console.log("setup_page.js require(...) called");
+    console.log(`setup_page.js v${SCRIPT_VERSION} loaded - require(...) called`);
 
     // Track which configurations are available
     let configAvailability = {
         threshold: false,
         apiUrl: false
+    };
+
+    // Store existing configuration values
+    let existingConfig = {
+        threshold: null,
+        apiUrl: null,
+        hasToken: false
     };
 
     // Check configuration availability when page loads
@@ -29,7 +38,8 @@ require([
 
     // onclick function for "Complete Setup" button from setup_page_dashboard.xml
     async function completeSetup() {
-        console.log("setup_page.js completeSetup called");
+        console.log(`setup_page.js v${SCRIPT_VERSION} - completeSetup called`);
+        console.log(`NO blocking check in this version - will update settings and reload app`);
         // Value of password_input from setup_page_dashboard.xml
         const passwordToSave = $('#password_input').val();
         const thresholdToSave = $('#threshold_input').val();
@@ -55,14 +65,8 @@ require([
             stage = `Retrieving app.conf [install] stanza values for ${appName}`;
             const installStanza = appConfig.item('install');
             await installStanza.fetch();
-            // Verify that app is not already configured
             const isConfigured = installStanza.properties().is_configured;
-            if (isTrue(isConfigured)) {
-                console.warn(`App is configured already (is_configured=${isConfigured}), skipping setup page...`);
-                reloadApp(service);
-                redirectToApp();
-                return;
-            }
+            console.log(`v${SCRIPT_VERSION}: Found is_configured=${isConfigured}, but NOT blocking (old version would redirect here)`);
 
             // Setup configurations that we know are available
             if (configAvailability.threshold) {
@@ -73,8 +77,20 @@ require([
                 await attemptApiUrlConfig(configCollection, apiUrlToSave, warnings);
             }
 
-            // Critical: Save the password/token
-            await savePasswordToken(service, passwordToSave, installStanza, warnings);
+            // Critical: Save the password/token (only if provided, or if no token exists)
+            if (passwordToSave || !existingConfig.hasToken) {
+                await savePasswordToken(service, passwordToSave, installStanza, warnings);
+            } else {
+                // Token field left blank and existing token exists - skip password update
+                console.log("Keeping existing token (password field left blank)");
+                setIsConfigured(installStanza, 1);
+                reloadApp(service);
+                if (warnings.length > 0) {
+                    showWarnings(warnings);
+                }
+                $('.success').show();
+                redirectToApp();
+            }
 
         } catch (e) {
             console.error(e);
@@ -171,7 +187,7 @@ require([
 
     // Check which configurations are available when page loads
     async function checkConfigurationAvailability() {
-        console.log("Checking configuration availability...");
+        console.log(`v${SCRIPT_VERSION}: Checking configuration availability and loading existing values...`);
         const warnings = [];
         
         try {
@@ -188,6 +204,12 @@ require([
                 const alertStanza = alertCollection.item('alerts');
                 await alertStanza.fetch();
                 configAvailability.threshold = true;
+                // Load existing threshold value
+                const props = alertStanza.properties();
+                if (props.low_query_threshold !== undefined) {
+                    existingConfig.threshold = props.low_query_threshold;
+                    console.log(`Loaded existing threshold value: ${existingConfig.threshold}`);
+                }
                 console.log("Threshold configuration is available");
             } catch (e) {
                 console.warn("Threshold configuration not available:", e);
@@ -202,11 +224,33 @@ require([
                 const apiStanza = apiCollection.item('api');
                 await apiStanza.fetch();
                 configAvailability.apiUrl = true;
+                // Load existing API URL value
+                const props = apiStanza.properties();
+                if (props.context_api_url !== undefined) {
+                    existingConfig.apiUrl = props.context_api_url;
+                    console.log(`Loaded existing API URL: ${existingConfig.apiUrl}`);
+                }
                 console.log("API URL configuration is available");
             } catch (e) {
                 console.warn("API URL configuration not available:", e);
                 warnings.push("Custom API URL configuration is not available in this environment");
                 configAvailability.apiUrl = false;
+            }
+
+            // Check if a token already exists
+            try {
+                const passwords = service.storagePasswords(appNamespace);
+                await passwords.fetch();
+                const passKey = `${pwRealm}:${pwName}:`;
+                const existingPw = passwords.item(passKey);
+                if (existingPw) {
+                    existingConfig.hasToken = true;
+                    console.log("Existing token found - will show placeholder in password field");
+                } else {
+                    console.log("No existing token found - user must provide one");
+                }
+            } catch (e) {
+                console.warn("Could not check for existing token:", e);
             }
 
         } catch (e) {
@@ -223,12 +267,28 @@ require([
         // Hide loading indicator
         $('#loading_indicator').hide();
         
-        // Show available configuration inputs
+        console.log(`v${SCRIPT_VERSION}: Populating form with existing values...`);
+        
+        // Show available configuration inputs and populate with existing values
         if (configAvailability.threshold) {
             $('.threshold-config').show();
+            if (existingConfig.threshold !== null) {
+                $('#threshold_input').val(existingConfig.threshold);
+                console.log(`Pre-filled threshold field with: ${existingConfig.threshold}`);
+            }
         }
         if (configAvailability.apiUrl) {
             $('.api-url-config').show();
+            if (existingConfig.apiUrl !== null) {
+                $('#api_url_input').val(existingConfig.apiUrl);
+                console.log(`Pre-filled API URL field with: ${existingConfig.apiUrl}`);
+            }
+        }
+        
+        // Update password field placeholder if token exists
+        if (existingConfig.hasToken) {
+            $('#password_input').attr('placeholder', 'Leave blank to keep existing token');
+            console.log('Set password field placeholder for existing token');
         }
         
         // Show any warnings about unavailable configurations
